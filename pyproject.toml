@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gnome-theme-manager"
+version = "0.1.0"
+description = "Manage GNOME themes"
+readme = "README.md"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["gnome_theme_manager"]
+py-modules = []
+
+[tool.setuptools.package-data]
+gnome_theme_manager = ["*.png", "*.css"]

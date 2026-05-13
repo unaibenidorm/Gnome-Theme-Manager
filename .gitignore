@@ -1,0 +1,24 @@
+# Archivos autogenerados por Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Entornos virtuales
+venv/
+.venv/
+env/
+
+# Archivos de empaquetado y binarios
+*.AppImage
+AppDir/
+build/
+dist/
+*.egg-info/
+
+# Tu script local de construcción (por tu petición)
+build-appimage.sh
+
+# Carpetas temporales o de tu editor
+.vscode/
+.idea/
+*.swp

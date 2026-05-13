@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Gnome Theme Manager
+Comment=Browse and install GNOME themes from gnome-look.org
+Exec=org.gnome.ThemeManager
+Icon=org.gnome.ThemeManager
+Terminal=false
+Type=Application
+Categories=Settings;DesktopSettings;GTK;
+Keywords=themes;gnome;gtk;shell;grub;plymouth;gdm;customization;
+StartupNotify=true
