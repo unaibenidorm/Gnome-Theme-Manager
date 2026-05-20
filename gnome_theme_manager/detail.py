@@ -1,11 +1,26 @@
 """Detail view for a selected theme."""
-import gi, threading, os, tempfile, webbrowser
+import gi, threading, os, tempfile, webbrowser, json
 gi.require_version('Gtk','4.0'); gi.require_version('Adw','1'); gi.require_version('GdkPixbuf','2.0')
 from gi.repository import Gtk, Adw, GLib, GdkPixbuf, Gdk
 from pathlib import Path
 from . import api, installer
-from pathlib import Path
 from .widgets import InAppImageViewer
+
+_CONFIG_DIR = Path.home() / ".config" / "gnome-theme-manager"
+_CONFIG_FILE = _CONFIG_DIR / "config.json"
+
+def _load_detail_config():
+    if _CONFIG_FILE.exists():
+        try:
+            with open(_CONFIG_FILE, "r") as f: return json.load(f)
+        except Exception: pass
+    return {}
+
+def _save_detail_config(cfg):
+    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(_CONFIG_FILE, "w") as f: json.dump(cfg, f)
+    except Exception: pass
 
 class ThemeDetailView(Gtk.Box):
     def __init__(self, window):
@@ -89,14 +104,34 @@ class ThemeDetailView(Gtk.Box):
         installed_list = loc_list + sys_list
         
         t_name = data.get("name", "").lower()
+        t_id = data.get("id")
         # Use more strict matching to avoid false positives
         installed_names = [name for name, _ in installed_list]
-        is_installed = installer.is_theme_installed_fuzzy(t_name, installed_names)
+        is_installed = installer.is_theme_installed(t_id, t_name, cat_key, installed_names)
         
         self.status_row = Adw.ActionRow(title="Status", subtitle="✅ Installed")
         if is_installed:
             ig.add(self.status_row)
         self.info_group = ig
+        
+        # Calculate and remember variants
+        links = []
+        for i in range(1, 20):
+            l = data.get(f"downloadlink{i}")
+            n = data.get(f"downloadname{i}")
+            if l and n:
+                if n.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif')):
+                    continue
+                links.append((n, l))
+        
+        has_vars = len(links) > 1
+        theme_id = str(data.get("id", ""))
+        if theme_id:
+            cfg = _load_detail_config()
+            if "themes_with_variants" not in cfg:
+                cfg["themes_with_variants"] = {}
+            cfg["themes_with_variants"][theme_id] = has_vars
+            _save_detail_config(cfg)
         
         for lbl, val in [("Author", data.get("personid","")), ("Version", data.get("version","")),
                          ("Downloads", data.get("downloads","0")), ("Rating", str(data.get("score","0"))),
@@ -125,23 +160,37 @@ class ThemeDetailView(Gtk.Box):
         ag = Adw.PreferencesGroup(title="Install")
         cat_info = api.CATEGORIES.get(cat_key, {})
 
+        has_vars = self._has_variants()
+
         if cat_info.get("system_only"):
             sr = Adw.ActionRow(title="Install system-wide (requires password)", subtitle="pkexec will be used automatically")
-            self.install_btn_sys = Gtk.Button(label="Installed" if is_installed else "Install", valign=Gtk.Align.CENTER)
-            if is_installed: self.install_btn_sys.set_sensitive(False)
-            else: self.install_btn_sys.add_css_class("suggested-action")
+            
+            label = "Install another variant" if (is_installed and has_vars) else ("Installed" if is_installed else "Install")
+            self.install_btn_sys = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
+            
+            if is_installed and not has_vars:
+                self.install_btn_sys.set_sensitive(False)
+            else:
+                self.install_btn_sys.add_css_class("suggested-action")
+                
             self.install_btn_sys.connect("clicked", lambda b: self._install("system"))
             sr.add_suffix(self.install_btn_sys); ag.add(sr)
         else:
             lr = Adw.ActionRow(title="Install for current user", subtitle=str(installer.get_theme_dir(cat_key,"local") or ""))
-            self.install_btn_loc = Gtk.Button(label="Installed" if is_installed else "Install", valign=Gtk.Align.CENTER)
-            if is_installed: self.install_btn_loc.set_sensitive(False)
-            else: self.install_btn_loc.add_css_class("suggested-action")
+            
+            label = "Install another variant" if (is_installed and has_vars) else ("Installed" if is_installed else "Install")
+            self.install_btn_loc = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
+            
+            if is_installed and not has_vars:
+                self.install_btn_loc.set_sensitive(False)
+            else:
+                self.install_btn_loc.add_css_class("suggested-action")
+                
             self.install_btn_loc.connect("clicked", lambda b: self._install("local"))
             lr.add_suffix(self.install_btn_loc); ag.add(lr)
 
         # Apply button for applicable types
-        if cat_key in ("gtk","shell","icons","grub","plymouth"):
+        if cat_key in ("gtk","shell","icons","cursors","grub","plymouth"):
             self.apply_btn_row = Adw.ActionRow(title="Apply theme" if is_installed else "Apply theme after installing", subtitle="Change active theme like GNOME Tweaks")
             
             bbox = Gtk.Box(spacing=10, valign=Gtk.Align.CENTER)
@@ -270,11 +319,40 @@ class ThemeDetailView(Gtk.Box):
 
     def _install_all_variants(self, dialog, links, scope, apply_after):
         dialog.close()
-        for name, link in links:
-            self._start_install(name, link, scope, apply_after)
+        has_git = any(api._is_git_repo_url(link) for _, link in links)
+        cfg = _load_detail_config()
+        
+        if cfg.get("hide_install_disclaimer", False) and not has_git:
+            for name, link in links:
+                is_git = api._is_git_repo_url(link)
+                self._actual_install(name, link, scope, apply_after, is_git)
+            return
+            
+        body_text = f"You are about to install all {len(links)} variants of this theme.\n\n"
+        if has_git:
+            body_text += "Some links point to code repositories (GitHub/GitLab). The program will try to download them automatically.\n\n"
+        body_text += "Note: Some themes may require additional configuration steps (fonts, dependencies, manual tweaks) described in their description."
+        
+        md = Adw.MessageDialog(
+            heading=f"Install All {len(links)} Variants?",
+            body=body_text,
+            transient_for=self.window
+        )
+        md.add_response("cancel", "Cancel")
+        md.add_response("ok", "Install All")
+        md.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+        
+        def _on_confirm(d, res):
+            if res == "ok":
+                for name, link in links:
+                    is_git = api._is_git_repo_url(link)
+                    self._actual_install(name, link, scope, apply_after, is_git)
+        
+        md.connect("response", _on_confirm)
+        md.present()
 
     def _start_install(self, name, link, scope, apply_after):
-        is_git = ("github.com" in link or "gitlab.com" in link) and not any(link.endswith(e) for e in (".zip", ".tar.gz", ".tar.xz", ".tar.bz2"))
+        is_git = api._is_git_repo_url(link)
         
         if is_git:
             md = Adw.MessageDialog(heading="Code Repository", body=f"The link for '{name}' points to a code repository (GitHub/GitLab). The program will try to download and find themes automatically, but this might be experimental. Do you want to continue?")
@@ -282,12 +360,42 @@ class ThemeDetailView(Gtk.Box):
             md.add_response("ok", "Continue")
             md.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
             def on_res(d, res):
-                if res == "ok": self._actual_install(name, link, scope, apply_after, is_git)
+                if res == "ok": self._show_install_disclaimer(name, link, scope, apply_after, is_git)
             md.connect("response", on_res)
             md.set_transient_for(self.window)
             md.present()
         else:
+            self._show_install_disclaimer(name, link, scope, apply_after, is_git)
+
+    def _show_install_disclaimer(self, name, link, scope, apply_after, is_git):
+        """Show a disclaimer before installing, with option to never show again."""
+        cfg = _load_detail_config()
+        if cfg.get("hide_install_disclaimer", False):
             self._actual_install(name, link, scope, apply_after, is_git)
+            return
+        
+        md = Adw.MessageDialog(
+            heading="⚠ Before installing",
+            body="Some themes may require additional configuration steps "
+                 "(fonts, dependencies, manual tweaks, etc.) that are described "
+                 "in the theme's description or on its web page.\n\n"
+                 "Please review the description before applying.",
+            transient_for=self.window
+        )
+        md.add_response("cancel", "Cancel")
+        md.add_response("never", "Don't show again")
+        md.add_response("ok", "Continue")
+        md.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+        def _on_disclaimer(d, res):
+            if res == "never":
+                cfg = _load_detail_config()
+                cfg["hide_install_disclaimer"] = True
+                _save_detail_config(cfg)
+                self._actual_install(name, link, scope, apply_after, is_git)
+            elif res == "ok":
+                self._actual_install(name, link, scope, apply_after, is_git)
+        md.connect("response", _on_disclaimer)
+        md.present()
 
     def _ask_github_redirect(self, name, link, scope, apply_after):
         md = Adw.MessageDialog(heading="Code Repository", body=f"The link for '{name}' redirects to a code repository (GitHub/GitLab). The program will try to clone it to find themes automatically, but it might be experimental. Do you want to continue?")
@@ -306,16 +414,25 @@ class ThemeDetailView(Gtk.Box):
 
     def _do_install(self, name, link, scope, apply_after, is_git):
         if is_git:
+            # Strip /archive/ or /releases/ suffixes to get the actual repo URL
             clean_link = link.split("/archive/")[0] if "/archive/" in link else link
             clean_link = clean_link.split("/releases/download/")[0] if "/releases/download/" in clean_link else clean_link
+            # Remove trailing .git if present
+            if clean_link.endswith(".git"):
+                clean_link = clean_link[:-4]
+            # Ensure it ends with .git for cloning
+            clone_url = clean_link if clean_link.endswith(".git") else clean_link + ".git"
             import subprocess
             try:
                 safe_name = name.replace(" ", "_").replace("/", "_")
                 clone_dir = Path(tempfile.mkdtemp()) / safe_name
-                r = subprocess.run(["git", "clone", "--depth", "1", clean_link, str(clone_dir)], capture_output=True)
+                r = subprocess.run(["git", "clone", "--depth", "1", clone_url, str(clone_dir)], capture_output=True)
                 if r.returncode != 0:
-                    GLib.idle_add(self.window.show_toast, f"❌ Error cloning repository: {r.stderr.decode('utf-8', errors='ignore')}")
-                    return
+                    # Retry without .git suffix
+                    r = subprocess.run(["git", "clone", "--depth", "1", clean_link, str(clone_dir)], capture_output=True)
+                    if r.returncode != 0:
+                        GLib.idle_add(self.window.show_toast, f"❌ Error cloning repository: {r.stderr.decode('utf-8', errors='ignore')}")
+                        return
                 ok = True
                 tmp = str(clone_dir)
             except FileNotFoundError:
@@ -330,11 +447,16 @@ class ThemeDetailView(Gtk.Box):
             ok = api.download_theme_file(link, tmp)
             
             if isinstance(ok, str) and ("github.com" in ok or "gitlab.com" in ok):
+                # The download redirected to a git repo page — ask user if they want to clone
                 GLib.idle_add(self._ask_github_redirect, name, ok, scope, apply_after)
                 return
-            
-        if not ok:
-            GLib.idle_add(self.window.show_toast, "❌ Download error"); return
+
+            if not ok:
+                # Cleanup temp file on failure
+                try: os.unlink(tmp)
+                except OSError: pass
+                GLib.idle_add(self.window.show_toast, "❌ Download error")
+                return
 
         cat_info = api.CATEGORIES.get(self.cat_key, {})
         actual_scope = "system" if cat_info.get("system_only") else scope
@@ -349,6 +471,22 @@ class ThemeDetailView(Gtk.Box):
         if success:
             names = msg.replace("Installed: ", "").split(", ")
             installed_name = names[0] if names else self.theme_data.get("name","")
+            
+            # Record in our 100% reliable local database memory
+            theme_id = self.theme_data.get("id")
+            if theme_id:
+                cfg = _load_detail_config()
+                if "installed_database" not in cfg:
+                    cfg["installed_database"] = {}
+                cfg["installed_database"][str(theme_id)] = {
+                    "id": str(theme_id),
+                    "name": self.theme_data.get("name", ""),
+                    "category": self.cat_key,
+                    "scope": actual_scope,
+                    "folders": names
+                }
+                _save_detail_config(cfg)
+                
             GLib.idle_add(self.window.show_toast, f"✅ {msg}")
             GLib.idle_add(self._mark_installed)
             if apply_after:
@@ -360,14 +498,28 @@ class ThemeDetailView(Gtk.Box):
         # Add the installed row if it's not already there
         if not self.status_row.get_parent():
             self.info_group.add(self.status_row)
-        if hasattr(self, "install_btn_sys"):
-            self.install_btn_sys.set_label("Installed")
-            self.install_btn_sys.set_sensitive(False)
-            self.install_btn_sys.remove_css_class("suggested-action")
-        if hasattr(self, "install_btn_loc"):
-            self.install_btn_loc.set_label("Installed")
-            self.install_btn_loc.set_sensitive(False)
-            self.install_btn_loc.remove_css_class("suggested-action")
+            
+        has_vars = self._has_variants()
+        
+        if has_vars:
+            if hasattr(self, "install_btn_sys"):
+                self.install_btn_sys.set_label("Install another variant")
+                self.install_btn_sys.set_sensitive(True)
+                self.install_btn_sys.remove_css_class("suggested-action")
+            if hasattr(self, "install_btn_loc"):
+                self.install_btn_loc.set_label("Install another variant")
+                self.install_btn_loc.set_sensitive(True)
+                self.install_btn_loc.remove_css_class("suggested-action")
+        else:
+            if hasattr(self, "install_btn_sys"):
+                self.install_btn_sys.set_label("Installed")
+                self.install_btn_sys.set_sensitive(False)
+                self.install_btn_sys.remove_css_class("suggested-action")
+            if hasattr(self, "install_btn_loc"):
+                self.install_btn_loc.set_label("Installed")
+                self.install_btn_loc.set_sensitive(False)
+                self.install_btn_loc.remove_css_class("suggested-action")
+                
         if hasattr(self, "apply_btn_row"):
             self.apply_btn_row.set_title("Apply theme")
         if hasattr(self, "apply_btn"):
@@ -377,6 +529,30 @@ class ThemeDetailView(Gtk.Box):
         if hasattr(self.window, "_populate_installed") and getattr(self.window, "installed_dialog", None) is not None:
             search_query = self.window.search_entry.get_text().lower() if getattr(self.window, "search_entry", None) else ""
             self.window._populate_installed(search_query)
+
+    def _has_variants(self):
+        if not self.theme_data:
+            return False
+            
+        # Check current theme_data links first
+        links = []
+        for i in range(1, 20):
+            l = self.theme_data.get(f"downloadlink{i}")
+            n = self.theme_data.get(f"downloadname{i}")
+            if l and n:
+                if n.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif')):
+                    continue
+                links.append((n, l))
+        if len(links) > 1:
+            return True
+            
+        # Fallback to saved config memory
+        theme_id = str(self.theme_data.get("id", ""))
+        if theme_id:
+            cfg = _load_detail_config()
+            return cfg.get("themes_with_variants", {}).get(theme_id, False)
+            
+        return False
 
     def _on_apply_btn_clicked(self, btn):
         if btn.get_label() == "Apply":
@@ -450,6 +626,7 @@ class ThemeDetailView(Gtk.Box):
             if self.cat_key == "gtk": self.prev_theme = installer.get_current_gtk_theme()
             elif self.cat_key == "icons": self.prev_theme = installer.get_current_icon_theme()
             elif self.cat_key == "shell": self.prev_theme = installer.get_current_shell_theme()
+            elif self.cat_key == "cursors": self.prev_theme = installer.get_current_cursor_theme()
 
         ok, msg = False, ""
         if self.cat_key == "gtk":
@@ -458,6 +635,8 @@ class ThemeDetailView(Gtk.Box):
             ok, msg = installer.apply_icon_theme(name)
         elif self.cat_key == "shell":
             ok, msg = installer.apply_shell_theme(name)
+        elif self.cat_key == "cursors":
+            ok, msg = installer.apply_cursor_theme(name)
             
         if ok:
             toast = Adw.Toast(title=f"✅ Theme applied: {name}", timeout=2)
@@ -476,8 +655,9 @@ class ThemeDetailView(Gtk.Box):
         if self.cat_key == "gtk": ok, msg = installer.apply_gtk_theme(prev_name)
         elif self.cat_key == "icons": ok, msg = installer.apply_icon_theme(prev_name)
         elif self.cat_key == "shell": ok, msg = installer.apply_shell_theme(prev_name)
+        elif self.cat_key == "cursors": ok, msg = installer.apply_cursor_theme(prev_name)
         if ok:
-            self.window.show_toast(f"↩ Restaurado a: {prev_name}")
+            self.window.show_toast(f"↩ Restored to: {prev_name}")
             if hasattr(self, 'undo_btn'): self.undo_btn.set_visible(False)
             self.prev_theme = ""
 
@@ -517,7 +697,23 @@ class ThemeDetailView(Gtk.Box):
             sw = Gtk.ScrolledWindow(vexpand=True)
             lb = Gtk.ListBox(); lb.add_css_class("boxed-list"); lb.set_margin_start(12); lb.set_margin_end(12); lb.set_margin_top(12); lb.set_margin_bottom(12)
             for v in variants:
-                r = Adw.ActionRow(title=v.parent.name if cat_key == "grub" else v.name)
+                if cat_key == "grub":
+                    # For GRUB: show resolution variant name from filename
+                    # e.g. theme_1080p.txt -> "1080p", theme.txt -> parent folder name
+                    stem = v.stem  # "theme_1080p" or "theme"
+                    if stem == "theme":
+                        display = v.parent.name
+                    else:
+                        # Strip leading "theme" prefix and separators
+                        label = stem
+                        for prefix in ["theme_", "theme-", "theme "]:
+                            if label.lower().startswith(prefix):
+                                label = label[len(prefix):]
+                                break
+                        display = f"{v.parent.name} — {label}"
+                else:
+                    display = v.name
+                r = Adw.ActionRow(title=display, subtitle=str(v))
                 b = Gtk.Button(label="Apply", valign=Gtk.Align.CENTER)
                 b.add_css_class("suggested-action")
                 b.connect("clicked", lambda btn, dlg=d, ck=cat_key, var=v: self._execute_system_apply_from_dialog(dlg, ck, var))
@@ -531,13 +727,42 @@ class ThemeDetailView(Gtk.Box):
 
     def _execute_system_apply(self, cat_key, variant_path):
         from .widgets import CommandDialog
-        if cat_key == "grub": 
+        
+        if cat_key == "grub":
+            # Check gfxterm before applying
+            is_gfx, current = installer.check_grub_gfxterm()
+            if not is_gfx:
+                md = Adw.MessageDialog(
+                    heading="GRUB Terminal Not in gfxterm",
+                    body=f"GRUB is currently set to '{current}'.\n\n"
+                         "GRUB themes require 'gfxterm' to render properly. "
+                         "If you continue, the installer will automatically switch GRUB_TERMINAL_OUTPUT to 'gfxterm'.\n\n"
+                         "Do you want to continue?",
+                    transient_for=self.window
+                )
+                md.add_response("cancel", "Cancel")
+                md.add_response("ok", "Continue and fix")
+                md.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+                def _on_gfx_response(d, res):
+                    if res == "ok":
+                        self._run_system_apply_script(cat_key, variant_path)
+                md.connect("response", _on_gfx_response)
+                md.present()
+                return
+            
             script = installer.get_grub_post_install_script(str(variant_path))
         else: 
-            # Use the directory name as theme ID for Plymouth
-            theme_id = Path(variant_path).parent.name
             script = installer.get_plymouth_post_install_script(str(variant_path))
         
+        dlg = CommandDialog(title=f"Applying {cat_key.upper()} theme", script_content=script)
+        dlg.present(self.window)
+
+    def _run_system_apply_script(self, cat_key, variant_path):
+        from .widgets import CommandDialog
+        if cat_key == "grub":
+            script = installer.get_grub_post_install_script(str(variant_path))
+        else:
+            script = installer.get_plymouth_post_install_script(str(variant_path))
         dlg = CommandDialog(title=f"Applying {cat_key.upper()} theme", script_content=script)
         dlg.present(self.window)
 

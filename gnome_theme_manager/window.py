@@ -35,14 +35,20 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         cfg = _load_config()
         self.is_dark = cfg.get("dark_mode", True)
         self.show_grub_warning = cfg.get("show_grub_warning", True)
+        self.low_performance = cfg.get("low_performance", False)
+        self.list_view = cfg.get("list_view", False)
         style_mgr = Adw.StyleManager.get_default()
         style_mgr.set_color_scheme(Adw.ColorScheme.FORCE_DARK if self.is_dark else Adw.ColorScheme.FORCE_LIGHT)
 
         self._setup_icons()
         self._build_ui(); self._load_css(); self._load_themes()
         
+        # Check first run welcome tutorial
+        if cfg.get("first_run", True):
+            GLib.idle_add(self._show_welcome_tutorial)
+        
         # Check for GRUB2 permissions at startup
-        if self.show_grub_warning:
+        elif self.show_grub_warning:
             GLib.idle_add(self._check_startup_permissions)
 
     def _check_startup_permissions(self):
@@ -89,10 +95,12 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
             Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
     def _build_ui(self):
-        self.split = Adw.NavigationSplitView()
+        self.split = Adw.OverlaySplitView()
+        self.split.set_show_sidebar(True)
+        self.split.set_min_sidebar_width(260)
+        self.split.set_max_sidebar_width(320)
 
         # Sidebar
-        sp = Adw.NavigationPage(title="Categories")
         sb = Gtk.Box(orientation=1)
         
         # Sidebar title
@@ -121,10 +129,9 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         bb.append(pb)
         ab = Gtk.Button(label="About"); ab.connect("clicked", self._show_about)
         bb.append(ab)
-        sb.append(bb); sp.set_child(sb)
+        sb.append(bb)
 
         # Content
-        self.cp = Adw.NavigationPage(title="Explore")
         cb = Gtk.Box(orientation=1)
         self._build_header(cb)
 
@@ -138,12 +145,15 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
 
         sw = Gtk.ScrolledWindow(vexpand=True)
         self.flow = Gtk.FlowBox(); self.flow.set_valign(Gtk.Align.START)
-        self.flow.set_max_children_per_line(10); self.flow.set_min_children_per_line(2)
-        self.flow.set_selection_mode(Gtk.SelectionMode.SINGLE); self.flow.set_homogeneous(True)
+        if self.list_view:
+            self.flow.set_max_children_per_line(1); self.flow.set_min_children_per_line(1)
+            self.flow.set_homogeneous(False)
+        else:
+            self.flow.set_max_children_per_line(10); self.flow.set_min_children_per_line(2)
+            self.flow.set_homogeneous(True)
         self.flow.set_column_spacing(10); self.flow.set_row_spacing(10)
         self.flow.set_margin_start(14); self.flow.set_margin_end(14)
         self.flow.set_margin_top(10); self.flow.set_margin_bottom(10)
-        self.flow.set_filter_func(self._filter_cards)
         self.flow.connect("child-activated", self._on_theme)
         sw.set_child(self.flow); bv.append(sw)
 
@@ -161,8 +171,8 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         cb.append(self.stack)
 
         self.toast = Adw.ToastOverlay(); self.toast.set_child(cb)
-        self.cp.set_child(self.toast)
-        self.split.set_sidebar(sp); self.split.set_content(self.cp)
+        self.split.set_sidebar(sb)
+        self.split.set_content(self.toast)
         
         self.main_overlay = Gtk.Overlay()
         self.main_overlay.set_child(self.split)
@@ -189,6 +199,21 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
 
     def _build_header(self, cb):
         ch = Adw.HeaderBar()
+        
+        # Sidebar manual toggle
+        self.toggle_sidebar_btn = Gtk.Button()
+        # Find a valid icon name supported by the active icon theme
+        icon_theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
+        chosen_icon = "sidebar-show-symbolic"
+        for name in ["sidebar-show-symbolic", "view-sidebar-left-symbolic", "view-sidebar-symbolic", "open-menu-symbolic"]:
+            if icon_theme.has_icon(name):
+                chosen_icon = name
+                break
+        self.toggle_sidebar_btn.set_icon_name(chosen_icon)
+        self.toggle_sidebar_btn.set_tooltip_text("Toggle Sidebar")
+        self.toggle_sidebar_btn.connect("clicked", lambda b: self._toggle_sidebar())
+        ch.pack_start(self.toggle_sidebar_btn)
+
         self.search = Gtk.SearchEntry(placeholder_text="Search themes...")
         self.search.set_hexpand(True)
         self.search.connect("activate", self._on_search)
@@ -199,29 +224,69 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         popbox = Gtk.Box(orientation=1, spacing=10)
         popbox.set_margin_start(12); popbox.set_margin_end(12); popbox.set_margin_top(12); popbox.set_margin_bottom(12)
         
+        # Use a ListBox to host ActionRows (required by Adw.ActionRow)
+        filter_lb = Gtk.ListBox()
+        filter_lb.set_selection_mode(Gtk.SelectionMode.NONE)
+        filter_lb.add_css_class("boxed-list")
+        
         # Filter toggle
         fr = Adw.ActionRow(title="Installed only")
-        sw = Gtk.Switch(valign=Gtk.Align.CENTER)
-        sw.set_active(self.show_installed_only)
-        sw.connect("notify::active", self._on_filter_installed)
-        fr.add_suffix(sw); popbox.append(fr)
+        self.installed_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self.installed_switch.set_active(self.show_installed_only)
+        self.installed_switch.connect("notify::active", self._on_filter_installed)
+        fr.add_suffix(self.installed_switch)
+        fr.set_activatable_widget(self.installed_switch)
+        filter_lb.append(fr)
         
-        popbox.append(Gtk.Separator(margin_top=6, margin_bottom=6))
-
         # Sort DropDown
         sr = Adw.ActionRow(title="Sort by")
         sm = Gtk.StringList.new(["Newest","Rating","Downloads","A-Z"])
-        self.sort_dd = Gtk.DropDown(model=sm, valign=Gtk.Align.CENTER); self.sort_dd.connect("notify::selected", self._on_sort)
-        sr.add_suffix(self.sort_dd); popbox.append(sr)
+        self.sort_dd = Gtk.DropDown(model=sm, valign=Gtk.Align.CENTER)
+        self.sort_dd.connect("notify::selected", self._on_sort)
+        sr.add_suffix(self.sort_dd)
+        filter_lb.append(sr)
         
+        popbox.append(filter_lb)
         pop.set_child(popbox)
         filter_btn = Gtk.MenuButton(icon_name="view-more-symbolic", popover=pop)
         ch.pack_end(filter_btn)
+        
+        # View Toggle Button (List vs Grid)
+        self.view_toggle_btn = Gtk.Button()
+        self.view_toggle_btn.set_icon_name("view-list-symbolic" if not self.list_view else "view-grid-symbolic")
+        self.view_toggle_btn.set_tooltip_text("Switch to List View" if not self.list_view else "Switch to Grid View")
+        self.view_toggle_btn.connect("clicked", self._on_toggle_view)
+        ch.pack_end(self.view_toggle_btn)
         
         reload_btn = Gtk.Button(icon_name="view-refresh-symbolic")
         reload_btn.connect("clicked", lambda b: self._load_themes())
         ch.pack_end(reload_btn)
         cb.append(ch)
+
+    def _toggle_sidebar(self):
+        show = not self.split.get_show_sidebar()
+        self.split.set_show_sidebar(show)
+
+    def _on_toggle_view(self, btn):
+        self.list_view = not self.list_view
+        self.view_toggle_btn.set_icon_name("view-list-symbolic" if not self.list_view else "view-grid-symbolic")
+        self.view_toggle_btn.set_tooltip_text("Switch to List View" if not self.list_view else "Switch to Grid View")
+        
+        cfg = _load_config()
+        cfg["list_view"] = self.list_view
+        _save_config(cfg)
+        
+        if self.list_view:
+            self.flow.set_max_children_per_line(1)
+            self.flow.set_min_children_per_line(1)
+            self.flow.set_homogeneous(False)
+        else:
+            self.flow.set_max_children_per_line(10)
+            self.flow.set_min_children_per_line(2)
+            self.flow.set_homogeneous(True)
+            
+        self.loading = False
+        self._load_themes()
 
     def show_image_overlay(self, urls, start_idx):
         from .widgets import InAppImageViewer
@@ -233,14 +298,11 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
             self.main_overlay.remove_overlay(self.image_viewer)
             self.image_viewer = None
 
-    def _filter_cards(self, child):
-        if self.show_installed_only:
-            return getattr(child, "is_installed", False)
-        return True
 
     def _on_filter_installed(self, sw, param):
         self.show_installed_only = sw.get_active()
-        self.flow.invalidate_filter()
+        # Reload themes — the _update method will re-check installed status
+        self._load_themes()
 
     def _on_cat(self, lb, row):
         if row and hasattr(row,'_cat_key'):
@@ -260,7 +322,7 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         if 0 <= i < len(sk): self.cur_sort = sk[i]; self.cur_page = 0; self._load_themes()
 
     def _on_theme(self, fb, child):
-        if isinstance(child, ThemeCard):
+        if hasattr(child, 'data') and hasattr(child, 'category_key'):
             self.detail.show_theme(child.data, child.category_key)
             self.stack.set_visible_child_name("detail")
 
@@ -278,8 +340,53 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._fetch, args=(cid,self.cur_page,self.cur_sort,self.cur_search,self.cur_cat), daemon=True).start()
 
     def _fetch(self, cid, pg, so, se, ck):
-        items, total = api.fetch_content_list(cid, pg, PAGESIZE, so, se)
-        GLib.idle_add(self._update, items, total, ck)
+        if self.show_installed_only:
+            all_items = []
+            
+            # Fetch first 8 pages of 100 items each in parallel for a total of 800 items!
+            def fetch_page(p, results_list, idx):
+                try:
+                    items, tot = api.fetch_content_list(cid, p, 100, so, se)
+                    results_list[idx] = items
+                except Exception as ex:
+                    print(f"Error fetching page {p}: {ex}")
+                    results_list[idx] = []
+
+            threads = []
+            results = [None] * 8
+            for i in range(8):
+                t = threading.Thread(target=fetch_page, args=(i, results, i), daemon=True)
+                t.start()
+                threads.append(t)
+                
+            for t in threads:
+                t.join()
+                
+            for res in results:
+                if res:
+                    all_items.extend(res)
+            
+            # Add items from local installed_database config
+            cfg = installer._load_installer_config()
+            db = cfg.get("installed_database", {})
+            for t_id, entry in db.items():
+                if entry.get("category") == ck:
+                    if "data" in entry:
+                        all_items.append(entry["data"])
+            
+            # Deduplicate items by ID
+            seen = set()
+            dedup_items = []
+            for it in all_items:
+                it_id = it.get("id")
+                if it_id not in seen:
+                    seen.add(it_id)
+                    dedup_items.append(it)
+                    
+            GLib.idle_add(self._update, dedup_items, len(dedup_items), ck)
+        else:
+            items, total = api.fetch_content_list(cid, pg, PAGESIZE, so, se)
+            GLib.idle_add(self._update, items, total, ck)
 
     def _update(self, items, total, ck):
         while c := self.flow.get_first_child(): self.flow.remove(c)
@@ -299,8 +406,21 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
             
             for it in items:
                 t_name = it.get("name", "").lower()
-                is_inst = installer.is_theme_installed_fuzzy(t_name, all_installed)
-                self.flow.append(ThemeCard(it, ck, is_inst))
+                t_id = it.get("id")
+                is_inst = installer.is_theme_installed(t_id, t_name, ck, all_installed)
+                card = ThemeCard(it, ck, is_inst, low_perf=self.low_performance, list_view=self.list_view)
+                if self.show_installed_only and not is_inst:
+                    continue
+                self.flow.append(card)
+        
+        if self.show_installed_only:
+            n_visible = 0
+            c = self.flow.get_first_child()
+            while c:
+                n_visible += 1
+                c = c.get_next_sibling()
+            ct = api.CATEGORIES.get(ck,{}).get("title","")
+            self.status.set_label(f"{ct} — {n_visible} installed (page {self.cur_page+1}/{mx+1})")
                 
         self.pg_lbl.set_label(f"{self.cur_page+1} / {mx+1}")
         self.prev.set_sensitive(self.cur_page>0); self.nxt.set_sensitive(self.cur_page<mx)
@@ -311,8 +431,9 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
 
     def _show_installed(self, btn=None):
         if hasattr(self, 'installed_dialog') and self.installed_dialog is not None:
-            try: self.installed_dialog.close()
-            except: pass
+            if self.installed_dialog.get_realized() and self.installed_dialog.get_visible():
+                try: self.installed_dialog.close()
+                except: pass
             
         self.installed_dialog = Adw.Dialog(); self.installed_dialog.set_title("Installed Themes")
         self.installed_dialog.set_content_width(500); self.installed_dialog.set_content_height(550)
@@ -344,6 +465,7 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         active_gtk = installer.get_current_gtk_theme()
         active_icons = installer.get_current_icon_theme()
         active_shell = installer.get_current_shell_theme()
+        active_cursors = installer.get_current_cursor_theme()
         active_grub = installer.get_active_grub_theme()
         active_plymouth = installer.get_active_plymouth_theme()
 
@@ -414,6 +536,7 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
                         if key == "gtk" and name == active_gtk: is_active = True
                         if key == "icons" and name == active_icons: is_active = True
                         if key == "shell" and name == active_shell: is_active = True
+                        if key == "cursors" and name == active_cursors: is_active = True
                         if key == "grub" and active_grub and str(path) in active_grub:
                             is_active = True
                             var_name = Path(active_grub).parent.name
@@ -445,7 +568,7 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
                         r.add_css_class("installed-row")
                         if is_active: r.add_css_class("success")
 
-                        if key in ("gtk", "icons", "shell", "grub", "plymouth"):
+                        if key in ("gtk", "icons", "shell", "cursors", "grub", "plymouth"):
                             ab2 = Gtk.Button(label="Apply", valign=Gtk.Align.CENTER)
                             ab2.add_css_class("flat")
                             ab2.connect("clicked", lambda b, n=name, k=key: self._apply_installed(n, k))
@@ -486,6 +609,7 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
                             if key == "gtk" and name == active_gtk: is_active = True
                             if key == "icons" and name == active_icons: is_active = True
                             if key == "shell" and name == active_shell: is_active = True
+                            if key == "cursors" and name == active_cursors: is_active = True
                             if key == "grub" and active_grub and str(path) in active_grub:
                                 is_active = True
                                 var_name = Path(active_grub).parent.name
@@ -502,7 +626,7 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
                             r.add_css_class("installed-row")
                             if is_active: r.add_css_class("success")
 
-                            if key in ("gtk", "icons", "shell", "grub", "plymouth"):
+                            if key in ("gtk", "icons", "shell", "cursors", "grub", "plymouth"):
                                 ab2 = Gtk.Button(label="Apply", valign=Gtk.Align.CENTER)
                                 ab2.add_css_class("flat")
                                 ab2.connect("clicked", lambda b, n=name, k=key: self._apply_installed(n, k))
@@ -545,11 +669,13 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         if cat_key == "gtk": prev_theme = installer.get_current_gtk_theme()
         elif cat_key == "icons": prev_theme = installer.get_current_icon_theme()
         elif cat_key == "shell": prev_theme = installer.get_current_shell_theme()
+        elif cat_key == "cursors": prev_theme = installer.get_current_cursor_theme()
 
         ok, msg = False, ""
         if cat_key == "gtk": ok, msg = installer.apply_gtk_theme(name)
         elif cat_key == "icons": ok, msg = installer.apply_icon_theme(name)
         elif cat_key == "shell": ok, msg = installer.apply_shell_theme(name)
+        elif cat_key == "cursors": ok, msg = installer.apply_cursor_theme(name)
         
         if ok:
             toast = Adw.Toast(title=f"✅ Theme applied: {name}", timeout=2)
@@ -565,6 +691,7 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         if cat_key == "gtk": ok, _ = installer.apply_gtk_theme(prev_name)
         elif cat_key == "icons": ok, _ = installer.apply_icon_theme(prev_name)
         elif cat_key == "shell": ok, _ = installer.apply_shell_theme(prev_name)
+        elif cat_key == "cursors": ok, _ = installer.apply_cursor_theme(prev_name)
         if ok:
             self.show_toast(f"↩ Restored to: {prev_name}")
             GLib.idle_add(self._populate_installed, "")
@@ -659,7 +786,7 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
 
     def _show_prefs(self, btn):
         d = Adw.Dialog(); d.set_title("Preferences")
-        d.set_content_width(450); d.set_content_height(400)
+        d.set_content_width(450); d.set_content_height(550)
         tb = Adw.ToolbarView(); tb.add_top_bar(Adw.HeaderBar())
         vb = Gtk.Box(orientation=1, spacing=10)
         vb.set_margin_start(12); vb.set_margin_end(12); vb.set_margin_top(8); vb.set_margin_bottom(8)
@@ -694,7 +821,39 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
             
         gr_switch.connect("notify::active", _on_grub_toggle)
         gr_row.add_suffix(gr_switch); gr_row.set_activatable_widget(gr_switch); bg.add(gr_row)
+
+        # Disclaimer Toggle
+        cfg = _load_config()
+        disc_row = Adw.ActionRow(title="Show installation disclaimer", subtitle="Show warning disclaimer before theme installation")
+        disc_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        disc_switch.set_active(not cfg.get("hide_install_disclaimer", False))
+        
+        def _on_disc_toggle(s, _):
+            c = _load_config()
+            c["hide_install_disclaimer"] = not s.get_active()
+            _save_config(c)
+            
+        disc_switch.connect("notify::active", _on_disc_toggle)
+        disc_row.add_suffix(disc_switch); disc_row.set_activatable_widget(disc_switch); bg.add(disc_row)
         vb.append(bg)
+
+        # Performance
+        pf = Adw.PreferencesGroup(title="Performance")
+        lp_row = Adw.ActionRow(title="Low performance mode", subtitle="Only load text. Images load when you click a theme.")
+        lp_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        lp_switch.set_active(self.low_performance)
+        
+        def _on_lp_toggle(s, _):
+            self.low_performance = s.get_active()
+            c = _load_config()
+            c["low_performance"] = self.low_performance
+            _save_config(c)
+            self.loading = False
+            self._load_themes()
+            
+        lp_switch.connect("notify::active", _on_lp_toggle)
+        lp_row.add_suffix(lp_switch); lp_row.set_activatable_widget(lp_switch); pf.add(lp_row)
+        vb.append(pf)
 
         # Paths
         pg = Adw.PreferencesGroup(title="Installation paths")
@@ -703,6 +862,15 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
             for scope, path in paths.items():
                 pg.add(Adw.ActionRow(title=f"{cat['title']} ({scope})", subtitle=str(path)))
         vb.append(pg)
+
+        # Help and Support
+        hg = Adw.PreferencesGroup(title="Help and Support")
+        t_row = Adw.ActionRow(title="Welcome Tutorial", subtitle="Replay the application onboarding walkthrough")
+        t_btn = Gtk.Button(label="Replay", valign=Gtk.Align.CENTER)
+        t_btn.connect("clicked", lambda b: (d.close(), self._show_welcome_tutorial()))
+        t_row.add_suffix(t_btn)
+        hg.add(t_row)
+        vb.append(hg)
 
         sw = Gtk.ScrolledWindow(vexpand=True); sw.set_child(vb)
         tb.set_content(sw); d.set_child(tb); d.present(self)
@@ -721,3 +889,219 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
                      "Supports GTK, GNOME Shell, Icons, GDM, GRUB and Plymouth.",
         )
         about.present(self)
+
+    def _show_welcome_tutorial(self):
+        d = Adw.Dialog(title="Welcome Assistant")
+        d.set_content_width(520); d.set_content_height(480)
+        
+        tb = Adw.ToolbarView()
+        tb.add_top_bar(Adw.HeaderBar())
+        
+        stack = Gtk.Stack()
+        stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
+        stack.set_transition_duration(300)
+        
+        # Slide 1: Welcome
+        s1 = Gtk.Box(orientation=1, spacing=14)
+        s1.set_margin_start(24); s1.set_margin_end(24); s1.set_margin_top(24); s1.set_margin_bottom(24)
+        s1.set_valign(Gtk.Align.CENTER)
+        
+        brush = Gtk.Image(icon_name="preferences-desktop-appearance-symbolic")
+        brush.set_pixel_size(64)
+        brush.add_css_class("accent")
+        s1.append(brush)
+        
+        l1 = Gtk.Label(label="Gnome Theme Manager"); l1.add_css_class("welcome-title")
+        s1.append(l1)
+        
+        sub1 = Gtk.Label(label="Transform your Linux environment with ease")
+        sub1.add_css_class("welcome-subtitle"); sub1.set_wrap(True)
+        s1.append(sub1)
+        
+        desc1 = Gtk.Label(label="Welcome to the ultimate hub for GNOME customization. Browse thousands of gorgeous themes directly from gnome-look.org and install them natively in seconds.")
+        desc1.set_wrap(True); desc1.add_css_class("dim-label")
+        s1.append(desc1)
+        stack.add_named(s1, "welcome")
+        
+        # Slide 2: Categories
+        s2 = Gtk.Box(orientation=1, spacing=12)
+        s2.set_margin_start(24); s2.set_margin_end(24); s2.set_margin_top(16); s2.set_margin_bottom(16)
+        s2.set_valign(Gtk.Align.CENTER)
+        
+        l2 = Gtk.Label(label="Rich Theme Support"); l2.add_css_class("welcome-title")
+        s2.append(l2)
+        
+        desc2 = Gtk.Label(label="Discover and safely apply the correct theme types:")
+        desc2.set_wrap(True); s2.append(desc2)
+        
+        cat_grid = Gtk.Box(orientation=1, spacing=8)
+        
+        c_items = [
+            ("preferences-desktop-wallpaper-symbolic", "GTK 3/4 & GNOME Shell Themes", "Visual components and desktop shells"),
+            ("folder-symbolic", "Icons & Cursors Themes", "Enrich icons, folder styles, and mouse cursors"),
+            ("drive-harddisk-symbolic", "GRUB, Plymouth & GDM Themes", "Beautiful bootloaders, splash screens, and logins")
+        ]
+        for icon, title, desc in c_items:
+            row_box = Gtk.Box(spacing=12)
+            row_box.add_css_class("tutorial-step-card")
+            img = Gtk.Image(icon_name=icon)
+            img.set_pixel_size(24)
+            row_box.append(img)
+            
+            lbl_box = Gtk.Box(orientation=1)
+            t_lbl = Gtk.Label(label=title, xalign=0); t_lbl.add_css_class("bold")
+            d_lbl = Gtk.Label(label=desc, xalign=0); d_lbl.add_css_class("dim-label")
+            lbl_box.append(t_lbl); lbl_box.append(d_lbl)
+            row_box.append(lbl_box)
+            cat_grid.append(row_box)
+            
+        s2.append(cat_grid)
+        stack.add_named(s2, "categories")
+        
+        # Slide 3: Performance Config
+        s3 = Gtk.Box(orientation=1, spacing=14)
+        s3.set_margin_start(24); s3.set_margin_end(24); s3.set_margin_top(24); s3.set_margin_bottom(24)
+        s3.set_valign(Gtk.Align.CENTER)
+        
+        perf_img = Gtk.Image(icon_name="preferences-system-symbolic")
+        perf_img.set_pixel_size(64)
+        perf_img.add_css_class("success")
+        s3.append(perf_img)
+        
+        l3 = Gtk.Label(label="Maximize Performance"); l3.add_css_class("welcome-title")
+        s3.append(l3)
+        
+        desc3 = Gtk.Label(label="Using a Virtual Machine or a slow internet connection? Toggle Low Performance Mode below to instantly load theme lists without fetching preview images, preventing API timeouts completely!")
+        desc3.set_wrap(True); desc3.add_css_class("dim-label")
+        s3.append(desc3)
+        
+        perf_row = Adw.ActionRow(title="Enable Low Performance Mode", subtitle="Skip heavy loading and display compact theme cards")
+        perf_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        perf_switch.set_active(self.low_performance)
+        
+        def _on_switch_toggle(sw, _):
+            self.low_performance = sw.get_active()
+            c = _load_config()
+            c["low_performance"] = self.low_performance
+            _save_config(c)
+            self.loading = False
+            self._load_themes()
+            
+        perf_switch.connect("notify::active", _on_switch_toggle)
+        perf_row.add_suffix(perf_switch)
+        perf_row.set_activatable_widget(perf_switch)
+        
+        perf_group = Adw.PreferencesGroup()
+        perf_group.add(perf_row)
+        s3.append(perf_group)
+        stack.add_named(s3, "perf")
+        
+        # Slide 4: Safe Admin
+        s4 = Gtk.Box(orientation=1, spacing=14)
+        s4.set_margin_start(24); s4.set_margin_end(24); s4.set_margin_top(24); s4.set_margin_bottom(24)
+        s4.set_valign(Gtk.Align.CENTER)
+        
+        shield = Gtk.Image(icon_name="security-high-symbolic")
+        shield.set_pixel_size(64)
+        shield.add_css_class("warning")
+        s4.append(shield)
+        
+        l4 = Gtk.Label(label="Safe System Modding"); l4.add_css_class("welcome-title")
+        s4.append(l4)
+        
+        desc4 = Gtk.Label(label="Installing bootloader (GRUB) or startup splash (Plymouth) themes modifies protected system folders.\n\nThe application will safely prompt for administrative permission using secure policy executors (pkexec) only when necessary, keeping your personal folders fully clean.")
+        desc4.set_wrap(True); desc4.add_css_class("dim-label")
+        s4.append(desc4)
+        stack.add_named(s4, "safe")
+        
+        # Slide 5: Ready!
+        s5 = Gtk.Box(orientation=1, spacing=14)
+        s5.set_margin_start(24); s5.set_margin_end(24); s5.set_margin_top(24); s5.set_margin_bottom(24)
+        s5.set_valign(Gtk.Align.CENTER)
+        
+        check_icon = Gtk.Image(icon_name="object-select-symbolic")
+        check_icon.set_pixel_size(64)
+        check_icon.add_css_class("success")
+        s5.append(check_icon)
+        
+        l5 = Gtk.Label(label="All Set!"); l5.add_css_class("welcome-title")
+        s5.append(l5)
+        
+        desc5 = Gtk.Label(label="Your customized GNOME workspace awaits. Welcome to the elegant desktop experience.")
+        desc5.set_wrap(True); desc5.add_css_class("welcome-subtitle")
+        s5.append(desc5)
+        
+        stack.add_named(s5, "ready")
+        
+        # Controls Box
+        controls = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER)
+        controls.set_margin_bottom(16)
+        
+        btn_prev = Gtk.Button(label="Back")
+        btn_prev.set_sensitive(False)
+        controls.append(btn_prev)
+        
+        # Slide indicators
+        ind_box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        slides = ["welcome", "categories", "perf", "safe", "ready"]
+        dots = []
+        for index, name in enumerate(slides):
+            dot = Gtk.Box()
+            dot.add_css_class("tutorial-dot")
+            if index == 0:
+                dot.add_css_class("tutorial-dot-active")
+            ind_box.append(dot)
+            dots.append(dot)
+        controls.append(ind_box)
+        
+        btn_next = Gtk.Button(label="Next")
+        btn_next.add_css_class("suggested-action")
+        controls.append(btn_next)
+        
+        def update_navigation():
+            cur = stack.get_visible_child_name()
+            idx = slides.index(cur)
+            btn_prev.set_sensitive(idx > 0)
+            
+            if idx == len(slides) - 1:
+                btn_next.set_label("Get Started!")
+                btn_next.add_css_class("success")
+            else:
+                btn_next.set_label("Next")
+                btn_next.remove_css_class("success")
+                btn_next.add_css_class("suggested-action")
+                
+            for i, dot in enumerate(dots):
+                dot.remove_css_class("tutorial-dot-active")
+                if i == idx:
+                    dot.add_css_class("tutorial-dot-active")
+                    
+        def _on_next(*args):
+            cur = stack.get_visible_child_name()
+            idx = slides.index(cur)
+            if idx == len(slides) - 1:
+                d.close()
+                c = _load_config()
+                c["first_run"] = False
+                _save_config(c)
+                # After tutorial finish, if grub warning was deferred, show it
+                if self.show_grub_warning:
+                    self._check_startup_permissions()
+            else:
+                stack.set_visible_child_name(slides[idx + 1])
+                update_navigation()
+                
+        def _on_prev(*args):
+            cur = stack.get_visible_child_name()
+            idx = slides.index(cur)
+            if idx > 0:
+                stack.set_visible_child_name(slides[idx - 1])
+                update_navigation()
+                
+        btn_next.connect("clicked", _on_next)
+        btn_prev.connect("clicked", _on_prev)
+        
+        tb.set_content(stack)
+        tb.add_bottom_bar(controls)
+        d.set_child(tb)
+        d.present(self)

@@ -1,58 +1,164 @@
-/* Gnome Theme Manager — Premium Styles */
+/* Gnome Theme Manager — Premium Native Stylesheet */
 
-.theme-card {
-    border-radius: 14px;
-    transition: all 250ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
-    min-width: 200px;
-}
-.theme-card:hover {
-    background: alpha(currentColor, 0.06);
+/* General Window & Sidebar */
+window {
+    background-color: @window_bg_color;
 }
 
-.theme-thumb-frame {
-    border-radius: 14px 14px 0 0;
-    border: none;
-    min-height: 150px;
+headerbar {
+    border-bottom: 1px solid alpha(currentColor, 0.08);
 }
 
-.theme-title { font-weight: 700; font-size: 13px; }
-.theme-meta  { font-size: 11px; }
-
-.theme-preview-frame {
-    border-radius: 14px;
-    min-height: 320px;
+/* Category Navigation Sidebar */
+.navigation-sidebar {
+    background-color: transparent;
+    padding: 6px;
 }
-
-.gallery-thumb {
-    border-radius: 8px;
-    border: 2px solid transparent;
-    transition: border-color 200ms ease;
-    padding: 2px;
-}
-.gallery-thumb:hover { border-color: @accent_color; }
-.gallery-thumb-active { border-color: @accent_color; }
 
 .navigation-sidebar row {
     border-radius: 10px;
-    margin: 3px 8px;
-    padding: 4px 0;
+    margin: 2px 4px;
+    padding: 6px 10px;
+    font-weight: 500;
+    transition: background-color 200ms ease, color 200ms ease;
 }
 
+/* Sidebar Title styling - clean & classic, matching original */
 .sidebar-title {
-    font-weight: 800;
+    font-family: "Inter", "Cantarell", sans-serif;
+    font-weight: 700;
     font-size: 15px;
-    letter-spacing: 0.5px;
+    letter-spacing: -0.2px;
+    margin-left: 6px;
 }
 
+/* Clean, Premium Card System */
+.theme-card {
+    border-radius: 12px;
+    border: 1px solid alpha(currentColor, 0.08);
+    background-color: @card_bg_color;
+    box-shadow: 0 2px 5px alpha(black, 0.03);
+    transition: border-color 200ms ease, box-shadow 200ms ease, background-color 200ms ease;
+    margin: 4px;
+}
+
+.theme-card:hover {
+    background-color: alpha(currentColor, 0.03);
+    box-shadow: 0 4px 12px alpha(black, 0.08);
+    border-color: alpha(@accent_color, 0.4);
+}
+
+.theme-thumb-frame {
+    border-radius: 12px 12px 0 0;
+    border: none;
+    background-color: alpha(currentColor, 0.04);
+}
+
+.theme-title {
+    font-weight: 700;
+    font-size: 13px;
+    color: @view_fg_color;
+}
+
+.theme-meta {
+    font-size: 11px;
+    font-weight: 500;
+    color: alpha(currentColor, 0.6);
+}
+
+/* Badges & Categories */
 .detail-badge {
-    border-radius: 20px;
-    padding: 4px 14px;
-    font-size: 12px;
+    border-radius: 9999px;
+    padding: 4px 12px;
+    font-size: 11px;
     font-weight: 600;
+    background-color: alpha(@accent_color, 0.12);
+    color: @accent_color;
+    border: 1px solid alpha(@accent_color, 0.2);
+}
+
+/* Detail View Gallery */
+.gallery-thumb {
+    border-radius: 8px;
+    border: 2px solid transparent;
+    transition: border-color 200ms ease, background-color 200ms ease;
+    padding: 2px;
+    margin: 2px;
+    background-color: alpha(currentColor, 0.04);
+}
+
+.gallery-thumb:hover {
+    border-color: alpha(@accent_color, 0.4);
+}
+
+.gallery-thumb-active {
+    border-color: @accent_color;
 }
 
 .zoom-overlay {
-    background: alpha(black, 0.85);
+    background-color: rgba(0, 0, 0, 0.9);
 }
 
-.installed-row { min-height: 48px; }
+/* Welcome Onboarding Tutorial */
+.welcome-title {
+    font-weight: 800;
+    font-size: 24px;
+    letter-spacing: -0.4px;
+    margin-bottom: 2px;
+}
+
+.welcome-subtitle {
+    font-weight: 500;
+    font-size: 14px;
+    color: alpha(currentColor, 0.6);
+    margin-bottom: 16px;
+}
+
+.tutorial-step-card {
+    border-radius: 10px;
+    background-color: alpha(currentColor, 0.03);
+    border: 1px solid alpha(currentColor, 0.06);
+    padding: 12px;
+    transition: border-color 200ms ease, background-color 200ms ease;
+}
+
+.tutorial-step-card:hover {
+    background-color: alpha(currentColor, 0.05);
+    border-color: alpha(@accent_color, 0.25);
+}
+
+.tutorial-dot {
+    background-color: alpha(currentColor, 0.2);
+    border-radius: 50%;
+    min-width: 8px;
+    min-height: 8px;
+    margin: 0 4px;
+    transition: background-color 200ms ease, min-width 200ms ease, border-radius 200ms ease;
+}
+
+.tutorial-dot-active {
+    background-color: @accent_color;
+    min-width: 20px;
+    border-radius: 4px;
+}
+
+/* Utilities */
+.dim-label {
+    opacity: 0.7;
+}
+
+.success {
+    color: @success_color;
+}
+
+.warning {
+    color: @warning_color;
+}
+
+.error {
+    color: @error_color;
+}
+
+.bold {
+    font-weight: 700;
+}

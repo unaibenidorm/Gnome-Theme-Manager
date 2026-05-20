@@ -5,49 +5,111 @@ from gi.repository import Gtk, Adw, GLib, GdkPixbuf, Gdk
 from . import api
 
 class ThemeCard(Gtk.FlowBoxChild):
-    def __init__(self, data, cat_key, is_installed=False):
+    def __init__(self, data, cat_key, is_installed=False, low_perf=False, list_view=False):
         super().__init__()
         self.data, self.category_key = data, cat_key
         self.is_installed = is_installed
-        self.set_size_request(210, 240)
-        box = Gtk.Box(orientation=1, spacing=0)
-        box.add_css_class("card"); box.add_css_class("theme-card")
-        self.pic = Gtk.Picture()
-        self.pic.set_size_request(210, 148)
-        self.pic.set_content_fit(Gtk.ContentFit.COVER)
+        self.list_view = list_view
         
-        fr = Gtk.Frame(); fr.set_child(self.pic); fr.add_css_class("theme-thumb-frame")
-        box.append(fr)
-        
-        info = Gtk.Box(orientation=1, spacing=2)
-        info.set_margin_start(8); info.set_margin_end(8); info.set_margin_top(6); info.set_margin_bottom(6)
-        
-        title_box = Gtk.Box(spacing=4)
-        t = Gtk.Label(label=data.get("name","?")[:32], hexpand=True, xalign=0)
-        t.set_ellipsize(3); t.add_css_class("theme-title")
-        title_box.append(t)
-        if is_installed:
-            tick = Gtk.Image(icon_name="object-select-symbolic", valign=Gtk.Align.CENTER)
-            tick.add_css_class("success")
-            title_box.append(tick)
-        info.append(title_box)
-        
-        m = Gtk.Box(spacing=6)
-        cat_t = api.CATEGORIES.get(cat_key, {}).get("title", cat_key.upper())
-        cat_lbl = Gtk.Label(label=cat_t)
-        cat_lbl.add_css_class("dim-label"); cat_lbl.add_css_class("theme-meta")
-        m.append(cat_lbl)
-        dl = Gtk.Label(label=f"⬇ {data.get('downloads','0')}")
-        dl.add_css_class("dim-label"); dl.add_css_class("theme-meta"); m.append(dl)
-        sc = Gtk.Label(label=f"★ {data.get('score','0')}")
-        sc.add_css_class("dim-label"); sc.add_css_class("theme-meta"); m.append(sc)
-        info.append(m); box.append(info); self.set_child(box)
-        img = data.get("previewpic1", data.get("smallpreviewpic1",""))
-        if img:
-            threading.Thread(target=self._load, args=(img,), daemon=True).start()
+        if list_view:
+            self.set_size_request(-1, 72)
+            box = Gtk.Box(orientation=0, spacing=14)
+            box.add_css_class("card"); box.add_css_class("theme-card")
+            box.set_margin_start(4); box.set_margin_end(4); box.set_margin_top(2); box.set_margin_bottom(2)
+            
+            self.pic = Gtk.Picture()
+            self.pic.set_size_request(80, 60)
+            self.pic.set_content_fit(Gtk.ContentFit.COVER)
+            
+            fr = Gtk.Frame(); fr.set_child(self.pic); fr.add_css_class("theme-thumb-frame")
+            fr.set_valign(Gtk.Align.CENTER)
+            
+            if not low_perf:
+                box.append(fr)
+                img = data.get("previewpic1", data.get("smallpreviewpic1",""))
+                if img:
+                    threading.Thread(target=self._load, args=(img,), daemon=True).start()
+            # If low_perf in list_view: we completely omit the image frame (no placeholder, no space wasted!)
+            
+            info = Gtk.Box(orientation=1, spacing=4)
+            info.set_valign(Gtk.Align.CENTER); info.set_hexpand(True)
+            
+            title_box = Gtk.Box(spacing=6)
+            t = Gtk.Label(label=data.get("name","?")[:48], hexpand=True, xalign=0)
+            t.set_ellipsize(3); t.add_css_class("theme-title")
+            title_box.append(t)
+            
+            if is_installed:
+                tick = Gtk.Image(icon_name="object-select-symbolic", valign=Gtk.Align.CENTER)
+                tick.add_css_class("success")
+                title_box.append(tick)
+            info.append(title_box)
+            
+            m = Gtk.Box(spacing=10)
+            cat_t = api.CATEGORIES.get(cat_key, {}).get("title", cat_key.upper())
+            cat_lbl = Gtk.Label(label=cat_t)
+            cat_lbl.add_css_class("dim-label"); cat_lbl.add_css_class("theme-meta")
+            m.append(cat_lbl)
+            
+            dl = Gtk.Label(label=f"\u2b07 {data.get('downloads','0')}")
+            dl.add_css_class("dim-label"); dl.add_css_class("theme-meta"); m.append(dl)
+            
+            sc = Gtk.Label(label=f"\u2605 {data.get('score','0')}")
+            sc.add_css_class("dim-label"); sc.add_css_class("theme-meta"); m.append(sc)
+            info.append(m)
+            
+            box.append(info)
+            self.set_child(box)
+        else:
+            # Grid View
+            self.set_size_request(210, 240)
+            box = Gtk.Box(orientation=1, spacing=0)
+            box.add_css_class("card"); box.add_css_class("theme-card")
+            
+            self.pic = Gtk.Picture()
+            self.pic.set_size_request(210, 148)
+            self.pic.set_content_fit(Gtk.ContentFit.COVER)
+            
+            fr = Gtk.Frame(); fr.set_child(self.pic); fr.add_css_class("theme-thumb-frame")
+            box.append(fr)
+            
+            info = Gtk.Box(orientation=1, spacing=2)
+            info.set_margin_start(8); info.set_margin_end(8); info.set_margin_top(6); info.set_margin_bottom(6)
+            
+            title_box = Gtk.Box(spacing=4)
+            t = Gtk.Label(label=data.get("name","?")[:32], hexpand=True, xalign=0)
+            t.set_ellipsize(3); t.add_css_class("theme-title")
+            title_box.append(t)
+            if is_installed:
+                tick = Gtk.Image(icon_name="object-select-symbolic", valign=Gtk.Align.CENTER)
+                tick.add_css_class("success")
+                title_box.append(tick)
+            info.append(title_box)
+            
+            m = Gtk.Box(spacing=6)
+            cat_t = api.CATEGORIES.get(cat_key, {}).get("title", cat_key.upper())
+            cat_lbl = Gtk.Label(label=cat_t)
+            cat_lbl.add_css_class("dim-label"); cat_lbl.add_css_class("theme-meta")
+            m.append(cat_lbl)
+            dl = Gtk.Label(label=f"\u2b07 {data.get('downloads','0')}")
+            dl.add_css_class("dim-label"); dl.add_css_class("theme-meta"); m.append(dl)
+            sc = Gtk.Label(label=f"\u2605 {data.get('score','0')}")
+            sc.add_css_class("dim-label"); sc.add_css_class("theme-meta"); m.append(sc)
+            info.append(m); box.append(info); self.set_child(box)
+            
+            if low_perf:
+                # Omit placeholder icon completely as requested.
+                # To prevent text shifting/weird resizing, the frame maintains its stable height
+                self.pic.set_paintable(None)
+                fr.set_size_request(-1, 148)
+                fr.set_child(Gtk.Label())
+            else:
+                img = data.get("previewpic1", data.get("smallpreviewpic1",""))
+                if img:
+                    threading.Thread(target=self._load, args=(img,), daemon=True).start()
 
     def _load(self, url):
-        d = api._make_request(url, timeout=15)
+        d = api._make_request(url, timeout=30)
         if d: GLib.idle_add(self._set, d)
 
     def _set(self, d):

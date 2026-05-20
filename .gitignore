@@ -15,8 +15,9 @@ build/
 dist/
 *.egg-info/
 
-# Tu script local de construcción (por tu petición)
+# Tu script local de construcción 
 build-appimage.sh
+release.md
 
 # Carpetas temporales o de tu editor
 .vscode/

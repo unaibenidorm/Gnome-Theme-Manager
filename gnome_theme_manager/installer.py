@@ -2,7 +2,7 @@
 Theme Installer — automatic installation with pkexec for system ops.
 Also handles applying themes via gsettings (like gnome-tweaks).
 """
-import os, shutil, subprocess, tarfile, zipfile, tempfile, re, configparser, json
+import os, shutil, subprocess, tarfile, zipfile, tempfile, re, configparser, json, shlex
 from pathlib import Path
 SECURE_CACHE = {}
 
@@ -34,6 +34,7 @@ def get_install_paths():
         "gtk":      {"local": home / ".themes",                       "system": Path("/usr/share/themes")},
         "shell":    {"local": home / ".themes",                       "system": Path("/usr/share/themes")},
         "icons":    {"local": home / ".icons",                        "system": Path("/usr/share/icons")},
+        "cursors":  {"local": home / ".icons",                        "system": Path("/usr/share/icons")},
         "gdm":      {"local": home / ".themes",                       "system": Path("/usr/share/themes")},
         "grub":     {"system": grub_path},
         "plymouth": {"system": Path("/usr/share/plymouth/themes")},
@@ -65,19 +66,41 @@ def get_installed_themes(theme_type, scope="local"):
             for td in sorted(d_list):
                 if td.is_dir() and td.name != ".git":
                     pfs = list(td.rglob("*.plymouth"))
-                    for pf in pfs:
-                        rel = pf.parent.relative_to(d)
-                        themes.append((str(rel), str(pf.parent)))
-            return themes or [(e.name, str(e)) for e in sorted(d_list) if e.is_dir()]
+                    if pfs:
+                        for pf in pfs:
+                            rel = pf.parent.relative_to(d)
+                            themes.append((str(rel), str(pf.parent)))
+                    else:
+                        themes.append((td.name, str(td)))
+            return themes
         elif theme_type == "grub":
             themes = []
+            seen_dirs = set()
             for td in sorted(d_list):
                 if td.is_dir() and td.name != ".git":
-                    gts = list(td.rglob("theme.txt"))
-                    for gt in gts:
-                        rel = gt.parent.relative_to(d)
-                        themes.append((str(rel), str(gt.parent)))
-            return themes or [(e.name, str(e)) for e in sorted(d_list) if e.is_dir()]
+                    gts = list(td.rglob("theme*.txt"))
+                    if gts:
+                        for gt in gts:
+                            parent_str = str(gt.parent)
+                            if parent_str not in seen_dirs:
+                                seen_dirs.add(parent_str)
+                                rel = gt.parent.relative_to(d)
+                                themes.append((str(rel), parent_str))
+                    else:
+                        themes.append((td.name, str(td)))
+            return themes
+        
+        # Differentiate between gtk, shell, gdm, icons, cursors by directory contents
+        if theme_type == "cursors":
+            return [(e.name, str(e)) for e in sorted(d_list) if e.is_dir() and (e / "cursors").is_dir()]
+        elif theme_type == "icons":
+            return [(e.name, str(e)) for e in sorted(d_list) if e.is_dir() and not (e / "cursors").is_dir()]
+        elif theme_type == "gtk":
+            return [(e.name, str(e)) for e in sorted(d_list) if e.is_dir() and ((e / "gtk-3.0").is_dir() or (e / "gtk-4.0").is_dir())]
+        elif theme_type == "shell":
+            return [(e.name, str(e)) for e in sorted(d_list) if e.is_dir() and (e / "gnome-shell").is_dir()]
+        elif theme_type == "gdm":
+            return [(e.name, str(e)) for e in sorted(d_list) if e.is_dir() and ((e / "gnome-shell").is_dir() or (e / "gtk-3.0").is_dir())]
             
         return [(e.name, str(e)) for e in sorted(d_list) if e.is_dir()]
     except Exception:
@@ -136,47 +159,154 @@ def extract_archive(archive_path, dest_dir):
 def _find_theme_root(extracted_dir, theme_type):
     """Find the actual theme directory inside extracted archive."""
     root = Path(extracted_dir)
-    indicators = {
-        "gtk":   ["gtk-3.0", "gtk-4.0"],
-        "shell": ["gnome-shell"],
-        "gdm":   ["gnome-shell", "gtk-3.0"],
-        "icons": ["index.theme"],
-        "grub":  ["theme.txt"],
-        "plymouth": [],
-    }
-    checks = indicators.get(theme_type, [])
     
+    def check_dir(d, t_type):
+        if t_type == "grub":
+            try: return bool(list(d.glob("theme*.txt")))
+            except Exception: return False
+        elif t_type == "plymouth":
+            try: return bool(list(d.glob("*.plymouth")))
+            except Exception: return False
+        elif t_type == "cursors":
+            return (d / "cursors").is_dir()
+        elif t_type == "icons":
+            return (d / "index.theme").exists() and not (d / "cursors").is_dir()
+        elif t_type == "gtk":
+            return (d / "gtk-3.0").is_dir() or (d / "gtk-4.0").is_dir()
+        elif t_type == "shell":
+            return (d / "gnome-shell").is_dir()
+        elif t_type == "gdm":
+            return (d / "gnome-shell").is_dir() or (d / "gtk-3.0").is_dir()
+        return False
+
     # Check if root itself is the theme
-    for c in checks:
-        if (root / c).exists():
-            return [root]
+    if check_dir(root, theme_type):
+        return [root]
     
     # Check first-level children
     candidates = []
     for entry in root.iterdir():
         if entry.is_dir() and entry.name != ".git":
-            for c in checks:
-                if (entry / c).exists():
-                    candidates.append(entry)
-                    break
+            if check_dir(entry, theme_type):
+                candidates.append(entry)
     if candidates:
         return candidates
     
-    # For plymouth, check for .plymouth files
-    if theme_type == "plymouth":
-        for entry in root.iterdir():
-            if entry.is_dir() and entry.name != ".git":
-                if list(entry.glob("*.plymouth")):
-                    candidates.append(entry)
-        if candidates:
-            return candidates
+    # Check second-level children
+    for entry in root.iterdir():
+        if entry.is_dir() and entry.name != ".git":
+            try:
+                for sub in entry.iterdir():
+                    if sub.is_dir() and sub.name != ".git":
+                        if check_dir(sub, theme_type):
+                            candidates.append(sub)
+            except PermissionError:
+                continue
+    if candidates:
+        return candidates
     
     # Fallback: return all first-level dirs
     return [e for e in root.iterdir() if e.is_dir() and e.name != ".git"] or [root]
 
+def detect_theme_type(extracted_dir):
+    """Auto-detect the type of theme(s) in an extracted directory.
+    Returns a list of (theme_type, theme_dir) tuples found."""
+    root = Path(extracted_dir)
+    results = []
+    
+    # Priority order: specific types first
+    type_indicators = [
+        ("grub",     lambda d: bool(list(d.glob("theme*.txt")))),
+        ("plymouth", lambda d: bool(list(d.glob("*.plymouth")))),
+        ("cursors",  lambda d: (d / "cursors").is_dir()),
+        ("shell",    lambda d: (d / "gnome-shell").is_dir() and not (d / "gtk-3.0").is_dir()),
+        ("gtk",      lambda d: (d / "gtk-3.0").is_dir() or (d / "gtk-4.0").is_dir()),
+        ("icons",    lambda d: (d / "index.theme").exists() and not (d / "cursors").is_dir()),
+    ]
+    
+    def _check_dir(d):
+        for ttype, check_fn in type_indicators:
+            try:
+                if check_fn(d):
+                    return ttype
+            except (PermissionError, OSError):
+                continue
+        return None
+    
+    # Check root
+    t = _check_dir(root)
+    if t:
+        results.append((t, root))
+        return results
+    
+    # Check children (may have multiple types)
+    for entry in sorted(root.iterdir()):
+        if entry.is_dir() and entry.name != ".git":
+            t = _check_dir(entry)
+            if t:
+                results.append((t, entry))
+            else:
+                # Check one more level deep
+                try:
+                    for sub in sorted(entry.iterdir()):
+                        if sub.is_dir() and sub.name != ".git":
+                            t = _check_dir(sub)
+                            if t:
+                                results.append((t, sub))
+                except (PermissionError, OSError):
+                    continue
+    
+    return results
+
+def _validate_cursor_theme(theme_dir):
+    """Validate a cursor theme has proper structure to avoid Gtk-WARNING about no directories."""
+    cursor_dir = theme_dir / "cursors"
+    index_file = theme_dir / "index.theme"
+    
+    if not cursor_dir.is_dir():
+        return False
+    
+    # Check if cursor dir has actual cursor files
+    cursor_files = list(cursor_dir.iterdir())
+    if not cursor_files:
+        return False
+    
+    # Create or fix index.theme to prevent Gtk-WARNING 'has no directories'
+    try:
+        content = ""
+        if index_file.exists():
+            content = index_file.read_text(errors='ignore')
+        
+        # If missing the header or Inherits key, Gtk will treat it as a broken icon theme
+        if "[Icon Theme]" not in content or "Inherits=" not in content:
+            index_file.write_text(
+                f"[Icon Theme]\n"
+                f"Name={theme_dir.name}\n"
+                f"Comment=Cursor theme {theme_dir.name}\n"
+                f"Inherits=default\n"
+            )
+    except Exception:
+        pass
+    
+    return True
+
+def _robust_copytree(src, dest):
+    """Robustly copy a directory tree, preserving symlinks and ignoring dangling symlinks."""
+    if dest.exists():
+        shutil.rmtree(dest)
+    try:
+        shutil.copytree(src, dest, symlinks=True, ignore_dangling_symlinks=True)
+    except TypeError:
+        # Fallback for Python versions lacking ignore_dangling_symlinks
+        try:
+            shutil.copytree(src, dest, symlinks=True)
+        except Exception:
+            shutil.copytree(src, dest, symlinks=False)
+
 def install_theme(archive_path, theme_type, scope="local", custom_path=None):
     """
     Install a theme. For system scope, uses pkexec automatically.
+    Auto-detects actual theme type from content if possible.
     Returns (success, message).
     """
     paths = get_install_paths()
@@ -185,8 +315,6 @@ def install_theme(archive_path, theme_type, scope="local", custom_path=None):
     
     if scope not in paths.get(theme_type, {}):
         scope = "system"
-    
-    target_dir = Path(custom_path) if custom_path else paths[theme_type][scope]
     
     try:
         is_dir = Path(archive_path).is_dir()
@@ -200,28 +328,65 @@ def install_theme(archive_path, theme_type, scope="local", custom_path=None):
                 except (tarfile.ReadError, zipfile.BadZipFile, ValueError) as e:
                     return False, f"The downloaded file is not a valid theme or the link requires login: {e}"
             
-            theme_dirs = _find_theme_root(tmp, theme_type)
+            # Auto-detect what types of themes are in the archive
+            detected = detect_theme_type(tmp)
             
             installed = []
-            for td in theme_dirs:
-                name = td.name
-                if name == ".git": continue
-                dest = target_dir / name
+            
+            if detected:
+                # Install each detected theme to its correct location
+                for det_type, det_dir in detected:
+                    actual_scope = scope
+                    cat_info_det = {"grub": True, "plymouth": True}.get(det_type, False)
+                    if cat_info_det:
+                        actual_scope = "system"
+                    
+                    if actual_scope not in paths.get(det_type, {}):
+                        actual_scope = list(paths.get(det_type, {}).keys())[0] if paths.get(det_type) else scope
+                    
+                    target_dir = Path(custom_path) if custom_path else paths[det_type][actual_scope]
+                    name = det_dir.name
+                    if name == ".git":
+                        continue
+                    dest = target_dir / name
+                    
+                    # Validate cursor themes before install
+                    if det_type == "cursors":
+                        _validate_cursor_theme(det_dir)
+                    
+                    if actual_scope == "system":
+                        ok, msg = _system_copy(det_dir, dest, det_type)
+                        if not ok:
+                            return False, msg
+                        if det_type in SECURE_CACHE:
+                            del SECURE_CACHE[det_type]
+                    else:
+                        target_dir.mkdir(parents=True, exist_ok=True)
+                        _robust_copytree(det_dir, dest)
+                    installed.append(name)
+            else:
+                # Fallback: use the original category-based detection
+                target_dir = Path(custom_path) if custom_path else paths[theme_type][scope]
+                theme_dirs = _find_theme_root(tmp, theme_type)
                 
-                if scope == "system":
-                    # Use pkexec for system installs
-                    ok, msg = _system_copy(td, dest, theme_type)
-                    if not ok:
-                        return False, msg
-                    # Invalidate cache so it refreshes next time
-                    if theme_type in SECURE_CACHE:
-                        del SECURE_CACHE[theme_type]
-                else:
-                    target_dir.mkdir(parents=True, exist_ok=True)
-                    if dest.exists():
-                        shutil.rmtree(dest)
-                    shutil.copytree(td, dest)
-                installed.append(name)
+                for td in theme_dirs:
+                    name = td.name
+                    if name == ".git": continue
+                    dest = target_dir / name
+                    
+                    if theme_type == "cursors":
+                        _validate_cursor_theme(td)
+                    
+                    if scope == "system":
+                        ok, msg = _system_copy(td, dest, theme_type)
+                        if not ok:
+                            return False, msg
+                        if theme_type in SECURE_CACHE:
+                            del SECURE_CACHE[theme_type]
+                    else:
+                        target_dir.mkdir(parents=True, exist_ok=True)
+                        _robust_copytree(td, dest)
+                    installed.append(name)
             
             if not installed: return False, "No valid themes found."
             return True, f"Installed: {', '.join(installed)}"
@@ -234,12 +399,14 @@ def _system_copy(src, dest, theme_type):
     """Copy files to system location using pkexec."""
     try:
         script = f"""#!/bin/bash
-mkdir -p "{dest.parent}"
-rm -rf "{dest}"
-cp -r "{src}" "{dest}"
+mkdir -p {shlex.quote(str(dest.parent))}
+rm -rf {shlex.quote(str(dest))}
+cp -r {shlex.quote(str(src))} {shlex.quote(str(dest))}
 """
-        tmp_script = tempfile.mktemp(suffix=".sh")
-        Path(tmp_script).write_text(script)
+        tmp_fd = tempfile.NamedTemporaryFile(mode='w', suffix=".sh", delete=False)
+        tmp_script = tmp_fd.name
+        tmp_fd.write(script)
+        tmp_fd.close()
         os.chmod(tmp_script, 0o755)
         
         result = subprocess.run(
@@ -263,22 +430,116 @@ def is_theme_installed_fuzzy(theme_name, installed_names):
     t_name = theme_name.strip().lower()
     if not t_name: return False
     
+    # Suffixes to strip for normalization
+    strip_suffixes = [
+        '-theme', '_theme', ' theme',
+        '-grub', '_grub', ' grub',
+        '-plymouth', '_plymouth', ' plymouth',
+        '-cursor', '_cursor', ' cursor',
+        '-cursors', '_cursors', ' cursors',
+        '-icon', '_icon', ' icon',
+        '-icons', '_icons', ' icons',
+        '-gtk', '_gtk', ' gtk',
+    ]
+    
     def clean(s):
-        for suf in ['-theme', '_theme', ' theme', '-grub', '_grub', ' grub', '-plymouth', '_plymouth', ' plymouth']:
-            s = s.replace(suf, '')
-        return s.strip()
+        s = s.lower().strip()
+        changed = True
+        while changed:
+            changed = False
+            for suf in strip_suffixes:
+                if s.endswith(suf):
+                    s = s[:-len(suf)].strip()
+                    changed = True
+        return s
     
     t_clean = clean(t_name)
     if not t_clean: return False
     
+    core_system_themes = {"adwaita", "hicolor", "highcontrast", "default", "gnome", "locolor", "pixmaps", "dmz", "dmz-white", "dmz-black"}
+
     for n in installed_names:
-        n_clean = clean(n.lower())
+        # If n has a slash, split it to get the base theme folder name (e.g. "marathon" from "marathon/1080p")
+        n_base = n.split('/')[0] if '/' in n else n
+        n_clean = clean(n_base.lower())
+        if not n_clean: continue
+        
+        # If it is a core system theme, we ONLY allow exact match!
+        if n_clean in core_system_themes:
+            if t_clean == n_clean:
+                return True
+            continue
+            
+        # Exact match after cleaning
         if t_clean == n_clean: return True
         # Prefix matching (e.g. "Mojave" vs "Mojave-Dark")
         for sep in ['-', '_', ' ']:
             if n_clean.startswith(t_clean + sep) or t_clean.startswith(n_clean + sep):
                 return True
+        # Substring match for short names (>= 4 chars) to catch "Bibata" in "Bibata-Modern-Ice"
+        if len(t_clean) >= 4 and (t_clean in n_clean or n_clean in t_clean):
+            if t_clean not in core_system_themes:
+                return True
     return False
+
+_CONFIG_DIR = Path.home() / ".config" / "gnome-theme-manager"
+_CONFIG_FILE = _CONFIG_DIR / "config.json"
+
+def _load_installer_config():
+    if _CONFIG_FILE.exists():
+        try:
+            with open(_CONFIG_FILE, "r") as f: return json.load(f)
+        except Exception: pass
+    return {}
+
+def _save_installer_config(cfg):
+    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(_CONFIG_FILE, "w") as f: json.dump(cfg, f)
+    except Exception: pass
+
+def is_theme_installed(theme_id, theme_name, category, installed_names):
+    """
+    Check if a theme is installed, prioritizing the local installed database (ID matching).
+    Falls back to fuzzy matching on theme_name against installed_names.
+    """
+    # 1. Try ID-based matching from local database
+    if theme_id:
+        cfg = _load_installer_config()
+        db = cfg.get("installed_database", {})
+        theme_id_str = str(theme_id)
+        if theme_id_str in db:
+            entry = db[theme_id_str]
+            folders = entry.get("folders", [])
+            scope = entry.get("scope", "local")
+            cat = entry.get("category", category)
+            paths = get_install_paths()
+            
+            if cat in paths:
+                still_exists = False
+                for f_name in folders:
+                    # Resolve to actual full path
+                    for s in [scope, "local", "system"]:
+                        if s in paths.get(cat, {}):
+                            p = paths[cat][s] / f_name
+                            if p.exists():
+                                still_exists = True
+                                break
+                    if still_exists:
+                        break
+                
+                if still_exists:
+                    return True
+                else:
+                    # Clean up invalid/deleted entry
+                    try:
+                        del db[theme_id_str]
+                        _save_installer_config(cfg)
+                    except Exception:
+                        pass
+
+    # 2. Fallback to robust fuzzy name matching
+    return is_theme_installed_fuzzy(theme_name, installed_names)
 
 def get_installed_themes_secure(theme_type):
     """Get system themes using pkexec to bypass permission errors."""
@@ -288,8 +549,6 @@ def get_installed_themes_secure(theme_type):
     
     d = paths[theme_type]["system"]
     try:
-        # Use a python script via pkexec to list the directory securely
-        # It returns a JSON string of (name, path) tuples
         py_script = f"""
 import os, json, pathlib
 path = pathlib.Path('{d}')
@@ -299,18 +558,41 @@ if path.exists():
         if e.is_dir() and e.name != '.git':
             if '{theme_type}' == 'plymouth':
                 pfs = list(e.rglob('*.plymouth'))
-                for pf in pfs:
-                    rel = pf.parent.relative_to(path)
-                    items.append((str(rel), str(pf.parent)))
+                if pfs:
+                    for pf in pfs:
+                        rel = pf.parent.relative_to(path)
+                        items.append((str(rel), str(pf.parent)))
+                else:
+                    items.append((e.name, str(e)))
             elif '{theme_type}' == 'grub':
-                gts = list(e.rglob('theme.txt'))
-                for gt in gts:
-                    rel = gt.parent.relative_to(path)
-                    items.append((str(rel), str(gt.parent)))
+                gts = list(e.rglob('theme*.txt'))
+                seen_dirs = set()
+                if gts:
+                    for gt in gts:
+                        ps = str(gt.parent)
+                        if ps not in seen_dirs:
+                            seen_dirs.add(ps)
+                            rel = gt.parent.relative_to(path)
+                            items.append((str(rel), ps))
+                else:
+                    items.append((e.name, str(e)))
+            elif '{theme_type}' == 'cursors':
+                if (e / 'cursors').is_dir():
+                    items.append((e.name, str(e)))
+            elif '{theme_type}' == 'icons':
+                if not (e / 'cursors').is_dir():
+                    items.append((e.name, str(e)))
+            elif '{theme_type}' == 'gtk':
+                if (e / 'gtk-3.0').is_dir() or (e / 'gtk-4.0').is_dir():
+                    items.append((e.name, str(e)))
+            elif '{theme_type}' == 'shell':
+                if (e / 'gnome-shell').is_dir():
+                    items.append((e.name, str(e)))
+            elif '{theme_type}' == 'gdm':
+                if (e / 'gnome-shell').is_dir() or (e / 'gtk-3.0').is_dir():
+                    items.append((e.name, str(e)))
             else:
                 items.append((e.name, str(e)))
-if not items and path.exists():
-    items = [(e.name, str(e)) for e in sorted(path.iterdir()) if e.is_dir()]
 print(json.dumps(items))
 """
         result = subprocess.run(
@@ -325,12 +607,35 @@ print(json.dumps(items))
     except Exception:
         return []
 
+def check_grub_gfxterm():
+    """Check if GRUB is configured with gfxterm (required for themes).
+    Returns (is_gfxterm, current_terminal) tuple."""
+    try:
+        cfg = Path("/etc/default/grub").read_text()
+        for line in cfg.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("GRUB_TERMINAL_OUTPUT="):
+                val = stripped.split("=", 1)[1].strip("\"'")
+                return val.lower() == "gfxterm", val
+            if stripped.startswith("GRUB_TERMINAL="):
+                val = stripped.split("=", 1)[1].strip("\"'")
+                return val.lower() == "gfxterm", val
+        # If not set, GRUB usually defaults to gfxterm on most distros
+        return True, "default (gfxterm)"
+    except Exception:
+        return True, "unknown"
+
 def get_grub_post_install_script(theme_txt_path):
     """Generate GRUB post-install commands."""
     grub_cfg = "/etc/default/grub"
+    safe_path = shlex.quote(theme_txt_path)
     cmds = f"""#!/bin/bash
-sed -i "/^GRUB_THEME=/d" {grub_cfg}
-echo 'GRUB_THEME="{theme_txt_path}"' >> {grub_cfg}
+# Ensure gfxterm is set for theme support
+sed -i '/^GRUB_TERMINAL_OUTPUT=/d' {grub_cfg}
+sed -i '/^GRUB_TERMINAL=/d' {grub_cfg}
+echo 'GRUB_TERMINAL_OUTPUT="gfxterm"' >> {grub_cfg}
+sed -i '/^GRUB_THEME=/d' {grub_cfg}
+echo 'GRUB_THEME={safe_path}' >> {grub_cfg}
 if command -v update-grub >/dev/null 2>&1; then
     update-grub
 elif command -v grub-mkconfig >/dev/null 2>&1; then
@@ -360,7 +665,7 @@ elif command -v update-alternatives >/dev/null 2>&1; then
 fi
 
 # Regenerate initramfs
-if command -v update-initramfs >/dev/null 2>&1; then
+            if command -v update-initramfs >/dev/null 2>&1; then
     update-initramfs -u
 elif command -v dracut >/dev/null 2>&1; then
     dracut -f
@@ -373,12 +678,13 @@ def get_grub_variants(theme_name):
     
     # If we already unlocked this category via pkexec, we should have the paths in cache
     if "grub" in SECURE_CACHE:
-        # SECURE_CACHE['grub'] is a list of (display_name, full_path_to_parent_of_theme_txt)
         matches = []
         for dname, fpath in SECURE_CACHE["grub"]:
-            # Match by name or if the path matches the search
             if theme_name.lower() in dname.lower() or theme_name.lower() in Path(fpath).name.lower():
-                matches.append(Path(fpath) / "theme.txt")
+                try:
+                    matches.extend(list(Path(fpath).glob("theme*.txt")))
+                except Exception:
+                    pass
         if matches: return matches
 
     try:
@@ -386,15 +692,15 @@ def get_grub_variants(theme_name):
             td_name, p_name = theme_name.split("/", 1)
             base = base_dir / td_name
             if base.exists():
-                return [p for p in base.rglob("theme.txt") if p.parent.name == p_name]
+                return [p for p in base.rglob("theme*.txt") if p.parent.name == p_name]
         
         # Exact match
         base = base_dir / theme_name
         if base.exists():
-            res = [p for p in base.rglob("theme.txt")]
+            res = [p for p in base.rglob("theme*.txt")]
             if res: return res
         
-        # Normalize search: remove suffixes like -grub, -theme and common separators
+        # Normalize search
         search_term = theme_name.lower()
         for s in ["-grub", "_grub", " grub", "-theme", "_theme", " theme"]:
             search_term = search_term.replace(s, "")
@@ -405,9 +711,45 @@ def get_grub_variants(theme_name):
             if d.is_dir():
                 d_low = d.name.lower()
                 if search_term in d_low or d_low in search_term:
-                    res = [p for p in d.rglob("theme.txt")]
+                    res = [p for p in d.rglob("theme*.txt")]
                     if res: return res
-    except (PermissionError, FileNotFoundError):
+    except PermissionError:
+        py_script = f"""
+import pathlib, json
+base = pathlib.Path('{base_dir}')
+results = []
+theme_name = '{theme_name}'
+search_term = theme_name.lower()
+for s in ["-grub", "_grub", " grub", "-theme", "_theme", " theme"]:
+    search_term = search_term.replace(s, "")
+search_term = search_term.strip()
+
+if base.exists():
+    b = base / theme_name
+    if b.exists():
+        results.extend([str(p) for p in b.rglob("theme*.txt")])
+    elif "/" in theme_name:
+        td, pd = theme_name.split("/", 1)
+        b = base / td
+        if b.exists():
+            results.extend([str(p) for p in b.rglob("theme*.txt") if p.parent.name == pd])
+            
+    if not results:
+        for d in base.iterdir():
+            if d.is_dir():
+                d_low = d.name.lower()
+                if search_term in d_low or d_low in search_term:
+                    results.extend([str(p) for p in d.rglob("theme*.txt")])
+print(json.dumps(results))
+"""
+        try:
+            r = subprocess.run(["pkexec", "python3", "-c", py_script], capture_output=True, text=True, timeout=10)
+            if r.returncode == 0:
+                paths = json.loads(r.stdout.strip())
+                return [Path(p) for p in paths]
+        except Exception:
+            pass
+    except Exception:
         pass
     return []
 
@@ -440,10 +782,40 @@ def get_plymouth_variants(theme_name):
         # If no folder match, look for ANY .plymouth file matching the name
         if not candidates:
             candidates = list(base_dir.rglob(f"*{theme_name}*.plymouth"))
-            
-        return candidates
+            if candidates: return candidates
     except PermissionError:
-        return []
+        py_script = f"""
+import pathlib, json
+base = pathlib.Path('{base_dir}')
+results = []
+theme_name = '{theme_name}'
+search_term = theme_name.lower()
+for s in ["-plymouth", "_plymouth", " plymouth", "-theme", "_theme", " theme"]:
+    search_term = search_term.replace(s, "")
+search_term = search_term.strip()
+
+if base.exists():
+    b = base / theme_name
+    if b.exists():
+        results.extend([str(p) for p in b.glob("*.plymouth")])
+    if not results:
+        for d in base.iterdir():
+            if d.is_dir():
+                d_low = d.name.lower()
+                if search_term in d_low or d_low in search_term:
+                    results.extend([str(p) for p in d.glob("*.plymouth")])
+print(json.dumps(results))
+"""
+        try:
+            r = subprocess.run(["pkexec", "python3", "-c", py_script], capture_output=True, text=True, timeout=10)
+            if r.returncode == 0:
+                paths = json.loads(r.stdout.strip())
+                return [Path(p) for p in paths]
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return []
 
 def uninstall_variant(var_dir_path, scope="local"):
     var_dir = Path(var_dir_path)
@@ -455,9 +827,11 @@ def uninstall_variant(var_dir_path, scope="local"):
 
     try:
         if scope == "system":
-            script = f"#!/bin/bash\nrm -rf '{var_dir}'\n"
-            tmp_script = tempfile.mktemp(suffix=".sh")
-            Path(tmp_script).write_text(script)
+            script = f"#!/bin/bash\nrm -rf {shlex.quote(str(var_dir))}\n"
+            tmp_fd = tempfile.NamedTemporaryFile(mode='w', suffix=".sh", delete=False)
+            tmp_script = tmp_fd.name
+            tmp_fd.write(script)
+            tmp_fd.close()
             os.chmod(tmp_script, 0o755)
             r = subprocess.run(["pkexec", "bash", tmp_script], capture_output=True, text=True)
             os.unlink(tmp_script)
@@ -488,16 +862,19 @@ def uninstall_theme(theme_name, theme_type, scope="local"):
 
     try:
         if scope == "system":
-            script = f'rm -rf "{theme_dir}"\n'
+            script = f'rm -rf {shlex.quote(str(theme_dir))}\n'
             if theme_type == "grub":
-                script += f'sed -i "/GRUB_THEME.*{theme_name}/d" /etc/default/grub\n'
+                safe_name = re.escape(theme_name)
+                script += f'sed -i "/GRUB_THEME.*{safe_name}/d" /etc/default/grub\n'
                 if shutil.which("update-grub"):
                     script += "update-grub\n"
-            tmp = tempfile.mktemp(suffix=".sh")
-            Path(tmp).write_text(script)
-            os.chmod(tmp, 0o755)
-            r = subprocess.run(["pkexec", "bash", tmp], capture_output=True, text=True, timeout=60)
-            os.unlink(tmp)
+            tmp_fd = tempfile.NamedTemporaryFile(mode='w', suffix=".sh", delete=False)
+            tmp_path = tmp_fd.name
+            tmp_fd.write(script)
+            tmp_fd.close()
+            os.chmod(tmp_path, 0o755)
+            r = subprocess.run(["pkexec", "bash", tmp_path], capture_output=True, text=True, timeout=60)
+            os.unlink(tmp_path)
             if r.returncode != 0:
                 return False, r.stderr.strip()
                 
@@ -524,6 +901,9 @@ def apply_shell_theme(name):
 
 def apply_cursor_theme(name):
     return _gsettings_set("org.gnome.desktop.interface", "cursor-theme", name)
+
+def get_current_cursor_theme():
+    return _gsettings_get("org.gnome.desktop.interface", "cursor-theme")
 
 def get_current_gtk_theme():
     return _gsettings_get("org.gnome.desktop.interface", "gtk-theme")
