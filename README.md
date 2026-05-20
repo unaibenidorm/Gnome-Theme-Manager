@@ -8,7 +8,7 @@ A modern, native GTK4/Libadwaita application designed to seamlessly browse, down
 > This software is currently in **Beta**. It is under active development and you may encounter unexpected bugs, crashes, or incomplete features. Use it at your own risk, especially when applying system-wide themes.
 
 <p align="center">
-  <i><img width="1099" height="749" alt="image" src="https://github.com/user-attachments/assets/5b86a963-b28d-4d37-8e9e-792ad65ce8d4" /></i>
+  <i><img width="1100" height="740" alt="image" src="https://github.com/user-attachments/assets/f05613a5-856d-42ea-b4e5-d374a04ee6c7" /></i>
 </p>
 
 ## ✨ Features
