@@ -1,5 +1,5 @@
 """Main Window for Gnome Theme Manager."""
-import gi, threading, webbrowser, json
+import gi, threading, webbrowser, json, os
 gi.require_version('Gtk','4.0'); gi.require_version('Adw','1')
 from gi.repository import Gtk, Adw, Gio, GLib, Gdk
 from pathlib import Path
@@ -105,8 +105,16 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         
         # Sidebar title
         sh = Adw.HeaderBar()
-        tl = Gtk.Label(label="Gnome Theme Manager"); tl.add_css_class("sidebar-title")
-        sh.set_title_widget(tl); sb.append(sh)
+        hb_title = Gtk.Box(spacing=6, halign=Gtk.Align.CENTER)
+        if os.geteuid() == 0:
+            admin_icon = Gtk.Image(icon_name="security-high-symbolic")
+            admin_icon.add_css_class("error")
+            admin_icon.set_tooltip_text("Running as Administrator (Root)")
+            hb_title.append(admin_icon)
+        tl = Gtk.Label(label="Gnome Theme Manager")
+        tl.add_css_class("sidebar-title")
+        hb_title.append(tl)
+        sh.set_title_widget(hb_title); sb.append(sh)
         
         self.cat_list = Gtk.ListBox(); self.cat_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self.cat_list.add_css_class("navigation-sidebar")
@@ -125,6 +133,10 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
 
         ib = Gtk.Button(label="📦 Installed Themes"); ib.connect("clicked", self._show_installed)
         bb.append(ib)
+        
+        grub_btn = Gtk.Button(label="🛠 GRUB Customizer"); grub_btn.connect("clicked", self._show_grub_customizer)
+        bb.append(grub_btn)
+        
         pb = Gtk.Button(label="⚙ Preferences"); pb.connect("clicked", self._show_prefs)
         bb.append(pb)
         ab = Gtk.Button(label="About"); ab.connect("clicked", self._show_about)
@@ -213,6 +225,14 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         self.toggle_sidebar_btn.set_tooltip_text("Toggle Sidebar")
         self.toggle_sidebar_btn.connect("clicked", lambda b: self._toggle_sidebar())
         ch.pack_start(self.toggle_sidebar_btn)
+        
+        if os.geteuid() == 0:
+            admin_badge = Gtk.Button(icon_name="security-high-symbolic")
+            admin_badge.add_css_class("error")
+            admin_badge.set_has_frame(False)
+            admin_badge.set_tooltip_text("Running as Administrator (Root)")
+            admin_badge.set_sensitive(False)
+            ch.pack_start(admin_badge)
 
         self.search = Gtk.SearchEntry(placeholder_text="Search themes...")
         self.search.set_hexpand(True)
@@ -835,6 +855,19 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
             
         disc_switch.connect("notify::active", _on_disc_toggle)
         disc_row.add_suffix(disc_switch); disc_row.set_activatable_widget(disc_switch); bg.add(disc_row)
+
+        # Run as root toggle
+        root_row = Adw.ActionRow(title="Run GTM as Administrator", subtitle="Prompt for administrator password once at startup next time")
+        root_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        root_switch.set_active(cfg.get("run_as_root", False))
+        
+        def _on_root_toggle(s, _):
+            c = _load_config()
+            c["run_as_root"] = s.get_active()
+            _save_config(c)
+            
+        root_switch.connect("notify::active", _on_root_toggle)
+        root_row.add_suffix(root_switch); root_row.set_activatable_widget(root_switch); bg.add(root_row)
         vb.append(bg)
 
         # Performance
@@ -1014,7 +1047,25 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         s4.append(desc4)
         stack.add_named(s4, "safe")
         
-        # Slide 5: Ready!
+        # Slide 5: GRUB Customizer
+        s_grub = Gtk.Box(orientation=1, spacing=14)
+        s_grub.set_margin_start(24); s_grub.set_margin_end(24); s_grub.set_margin_top(24); s_grub.set_margin_bottom(24)
+        s_grub.set_valign(Gtk.Align.CENTER)
+        
+        grub_img = Gtk.Image(icon_name="preferences-system-symbolic")
+        grub_img.set_pixel_size(64)
+        grub_img.add_css_class("accent")
+        s_grub.append(grub_img)
+        
+        l_grub = Gtk.Label(label="GRUB Customizer Built-in"); l_grub.add_css_class("welcome-title")
+        s_grub.append(l_grub)
+        
+        desc_grub = Gtk.Label(label="Now featuring a full-blown, robust GRUB Customizer built right into the app! Customize boot entries, edit kernel parameters, hide recovery items, and install/preview GRUB bootloader themes safely with an integrated live preview.")
+        desc_grub.set_wrap(True); desc_grub.add_css_class("dim-label")
+        s_grub.append(desc_grub)
+        stack.add_named(s_grub, "grub_customizer")
+        
+        # Slide 6: Ready!
         s5 = Gtk.Box(orientation=1, spacing=14)
         s5.set_margin_start(24); s5.set_margin_end(24); s5.set_margin_top(24); s5.set_margin_bottom(24)
         s5.set_valign(Gtk.Align.CENTER)
@@ -1043,7 +1094,7 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         
         # Slide indicators
         ind_box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
-        slides = ["welcome", "categories", "perf", "safe", "ready"]
+        slides = ["welcome", "categories", "perf", "safe", "grub_customizer", "ready"]
         dots = []
         for index, name in enumerate(slides):
             dot = Gtk.Box()
@@ -1105,3 +1156,13 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         tb.add_bottom_bar(controls)
         d.set_child(tb)
         d.present(self)
+
+    def _show_grub_customizer(self, btn):
+        from .grub_customizer import GrubCustomizerDialog, safe_present
+        try:
+            dialog = GrubCustomizerDialog(self)
+            safe_present(dialog, self)
+        except PermissionError:
+            self.show_toast("Autenticación cancelada. No se pudo cargar la configuración de GRUB.")
+        except Exception as e:
+            self.show_toast(f"No se pudo abrir Grub Customizer: {e}")

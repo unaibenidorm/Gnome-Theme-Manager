@@ -595,9 +595,17 @@ if path.exists():
                 items.append((e.name, str(e)))
 print(json.dumps(items))
 """
+        clean_env = os.environ.copy()
+        for k in ["LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "APPIMAGE", "APPDIR"]:
+            clean_env.pop(k, None)
+        if "PATH" in clean_env:
+            paths = clean_env["PATH"].split(":")
+            clean_paths = [p for p in paths if ".mount_" not in p and "/tmp/" not in p]
+            clean_env["PATH"] = ":".join(clean_paths)
+            
         result = subprocess.run(
-            ["pkexec", "python3", "-c", py_script],
-            capture_output=True, text=True, timeout=30
+            ["pkexec", "/usr/bin/python3", "-c", py_script],
+            capture_output=True, text=True, timeout=30, env=clean_env
         )
         if result.returncode == 0:
             data = json.loads(result.stdout.strip())
@@ -743,7 +751,7 @@ if base.exists():
 print(json.dumps(results))
 """
         try:
-            r = subprocess.run(["pkexec", "python3", "-c", py_script], capture_output=True, text=True, timeout=10)
+            r = subprocess.run(["pkexec", "/usr/bin/python3", "-c", py_script], capture_output=True, text=True, timeout=10)
             if r.returncode == 0:
                 paths = json.loads(r.stdout.strip())
                 return [Path(p) for p in paths]
@@ -807,7 +815,7 @@ if base.exists():
 print(json.dumps(results))
 """
         try:
-            r = subprocess.run(["pkexec", "python3", "-c", py_script], capture_output=True, text=True, timeout=10)
+            r = subprocess.run(["pkexec", "/usr/bin/python3", "-c", py_script], capture_output=True, text=True, timeout=10)
             if r.returncode == 0:
                 paths = json.loads(r.stdout.strip())
                 return [Path(p) for p in paths]
