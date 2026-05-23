@@ -1,6 +1,6 @@
 # 🎨 Gnome Theme Manager
 
-![Python](https://img.shields.io/badge/Python-3.x-blue?style=for-the-badge&logo=python) ![GTK4](https://img.shields.io/badge/GTK-4.0-green?style=for-the-badge&logo=gtk) ![Libadwaita](https://img.shields.io/badge/Libadwaita-1.x-purple?style=for-the-badge&logo=gnome) ![License](https://img.shields.io/badge/License-GPLv3-blue?style=for-the-badge)
+![Python](https://img.shields.io/badge/Python-3.x-blue?style=for-the-badge&logo=python) ![GTK4](https://img.shields.io/badge/GTK-4.0-green?style=for-the-badge&logo=gtk) ![Libadwaita](https://img.shields.io/badge/Libadwaita-1.x-purple?style=for-the-badge&logo=gnome) ![AUR](https://img.shields.io/aur/version/gnome-theme-manager?style=for-the-badge&logo=archlinux&label=AUR) ![License](https://img.shields.io/badge/License-GPLv3-blue?style=for-the-badge)
 
 A modern, native GTK4/Libadwaita application designed to seamlessly browse, download, install, and apply GNOME themes and customizations directly from [gnome-look.org](https://www.gnome-look.org/).
 
@@ -46,6 +46,23 @@ You can download the standalone **AppImage** from the [Releases](../../releases)
 ```bash
 chmod +x Gnome-Theme-Manager-*.AppImage
 ./Gnome-Theme-Manager-*.AppImage
+```
+
+### Arch Linux — AUR
+
+Gnome Theme Manager is available on the [Arch User Repository (AUR)](https://aur.archlinux.org/packages/gnome-theme-manager). You can install it using your preferred AUR helper:
+
+```bash
+# Using yay
+yay -S gnome-theme-manager
+
+# Using paru
+paru -S gnome-theme-manager
+
+# Manually with makepkg
+git clone https://aur.archlinux.org/gnome-theme-manager.git
+cd gnome-theme-manager
+makepkg -si
 ```
 
 ### Running from source
