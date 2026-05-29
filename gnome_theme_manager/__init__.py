@@ -1,7 +1,7 @@
 # Gnome Theme Manager
 # A GTK4/Libadwaita application for downloading and managing GNOME themes
 
-__version__ = "3.0.1-beta"
+__version__ = "4.0.0-beta"
 __app_id__ = "org.gnome.ThemeManager"
 __app_name__ = "Gnome Theme Manager"
 __github_url__ = "https://github.com/unaibenidorm/gnome-theme-manager"

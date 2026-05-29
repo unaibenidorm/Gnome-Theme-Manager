@@ -202,7 +202,7 @@ class InAppImageViewer(Gtk.Box):
         except Exception: pass
 
 class CommandDialog(Adw.Dialog):
-    def __init__(self, title, script_content):
+    def __init__(self, title, script_content, parent_window=None):
         super().__init__(title=title, content_width=550, content_height=400)
         tb = Adw.ToolbarView()
         tb.add_top_bar(Adw.HeaderBar())
@@ -218,6 +218,7 @@ class CommandDialog(Adw.Dialog):
         self.set_child(tb)
         
         self.script_content = script_content
+        self._parent_window = parent_window
         GLib.idle_add(self._run)
 
     def _run(self):
@@ -239,8 +240,18 @@ class CommandDialog(Adw.Dialog):
                 time.sleep(0.05)
                 
             GLib.idle_add(self._append, f"\nProcess finished with code {p.returncode}\n")
+            if p.returncode == 0:
+                GLib.idle_add(self._trigger_hot_reload)
         except Exception as e:
             GLib.idle_add(self._append, f"\nError: {str(e)}\n")
+
+    def _trigger_hot_reload(self):
+        win = self._parent_window
+        if win is None:
+            return
+        if hasattr(win, '_populate_installed') and getattr(win, 'installed_dialog', None) is not None:
+            search_query = win.search_entry.get_text().lower() if getattr(win, 'search_entry', None) else ""
+            win._populate_installed(search_query)
 
     def _append(self, text):
         buf = self.tv.get_buffer()

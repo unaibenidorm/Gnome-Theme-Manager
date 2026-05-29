@@ -837,6 +837,8 @@ class GrubCustomizerDialog(Adw.Dialog):
         header.pack_start(save_btn)
         refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Refresh", valign=Gtk.Align.CENTER)
         refresh_btn.connect("clicked", self._on_refresh); header.pack_start(refresh_btn)
+        backup_btn = Gtk.Button(icon_name="document-open-recent-symbolic", tooltip_text="Backup / Restore", valign=Gtk.Align.CENTER)
+        backup_btn.connect("clicked", self._on_backup_restore); header.pack_end(backup_btn)
         adv_btn = Gtk.Button(label="Advanced", tooltip_text="Advanced Settings", valign=Gtk.Align.CENTER)
         adv_btn.connect("clicked", self._on_advanced_settings); header.pack_end(adv_btn)
         tb.add_top_bar(header)
@@ -1460,6 +1462,128 @@ class GrubCustomizerDialog(Adw.Dialog):
         seconds = int(self.timeout_spinner.get_value()) if hasattr(self, 'timeout_spinner') else 5
         FullscreenPreviewWindow(bg_path, self.menu_entries, seconds, theme_config, False, self.theme_files_dir).present()
 
+    def _on_backup_restore(self, btn):
+        import json, datetime
+        backup_dir = Path.home() / ".config" / "gnome-theme-manager" / "grub_backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+
+        d = Adw.Dialog(title="GRUB Backup / Restore")
+        d.set_content_width(550); d.set_content_height(500)
+        tb = Adw.ToolbarView(); tb.add_top_bar(Adw.HeaderBar())
+
+        main_box = Gtk.Box(orientation=1, spacing=12)
+        main_box.set_margin_start(16); main_box.set_margin_end(16)
+        main_box.set_margin_top(12); main_box.set_margin_bottom(12)
+
+        # Create backup button
+        create_btn = Gtk.Button(label="Create Backup Now")
+        create_btn.add_css_class("suggested-action")
+        create_btn.add_css_class("pill")
+
+        def _create_backup(b):
+            try:
+                grub_path = Path("/etc/default/grub")
+                try:
+                    content = grub_path.read_text()
+                except PermissionError:
+                    r = subprocess.run(["pkexec", "cat", "/etc/default/grub"], capture_output=True, text=True, timeout=10)
+                    if r.returncode != 0:
+                        self.parent_window.show_toast("Failed to read GRUB config")
+                        return
+                    content = r.stdout
+                ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                bf = backup_dir / f"grub_backup_{ts}"
+                bf.write_text(content)
+                self.parent_window.show_toast(f"✅ Backup saved: {ts}")
+                d.close()
+                self._on_backup_restore(None)
+            except Exception as e:
+                self.parent_window.show_toast(f"Error: {e}")
+
+        create_btn.connect("clicked", _create_backup)
+        main_box.append(create_btn)
+
+        # List existing backups
+        backups = sorted(backup_dir.glob("grub_backup_*"), reverse=True)
+
+        if backups:
+            grp = Adw.PreferencesGroup(title=f"{len(backups)} Backup(s)")
+            for bf in backups:
+                ts_str = bf.name.replace("grub_backup_", "").replace("_", " ", 1).replace("-", ":", 2)
+                row = Adw.ActionRow(title=ts_str)
+
+                view_btn = Gtk.Button(icon_name="text-x-generic-symbolic", valign=Gtk.Align.CENTER, tooltip_text="View")
+                view_btn.add_css_class("flat")
+                view_btn.connect("clicked", lambda b, p=bf: self._show_backup_content(p))
+                row.add_suffix(view_btn)
+
+                restore_btn = Gtk.Button(icon_name="document-revert-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Restore")
+                restore_btn.add_css_class("flat")
+                restore_btn.connect("clicked", lambda b, p=bf, dlg=d: self._restore_backup(p, dlg))
+                row.add_suffix(restore_btn)
+
+                del_btn = Gtk.Button(icon_name="user-trash-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Delete")
+                del_btn.add_css_class("flat"); del_btn.add_css_class("error")
+                del_btn.connect("clicked", lambda b, p=bf, dlg=d: (p.unlink(), dlg.close(), self._on_backup_restore(None)))
+                row.add_suffix(del_btn)
+
+                grp.add(row)
+            main_box.append(grp)
+        else:
+            empty = Gtk.Label(label="No backups yet. Create one before saving changes!")
+            empty.add_css_class("dim-label"); empty.set_wrap(True)
+            main_box.append(empty)
+
+        sw = Gtk.ScrolledWindow(vexpand=True); sw.set_child(main_box)
+        tb.set_content(sw); d.set_child(tb)
+        safe_present(d, self)
+
+    def _show_backup_content(self, backup_path):
+        d = Adw.Dialog(title=f"Backup: {backup_path.name}")
+        d.set_content_width(550); d.set_content_height(450)
+        tb = Adw.ToolbarView(); tb.add_top_bar(Adw.HeaderBar())
+        sw = Gtk.ScrolledWindow(vexpand=True)
+        tv = Gtk.TextView(editable=False, monospace=True)
+        tv.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        tv.set_margin_start(10); tv.set_margin_end(10); tv.set_margin_top(10); tv.set_margin_bottom(10)
+        try:
+            tv.get_buffer().set_text(backup_path.read_text())
+        except Exception as e:
+            tv.get_buffer().set_text(f"Error reading backup: {e}")
+        sw.set_child(tv); tb.set_content(sw); d.set_child(tb)
+        safe_present(d, self)
+
+    def _restore_backup(self, backup_path, parent_dlg):
+        md = Adw.MessageDialog(
+            heading="Restore GRUB Backup?",
+            body=f"This will overwrite /etc/default/grub with the backup from:\n{backup_path.name}\n\nA grub-mkconfig will be run afterwards.",
+            transient_for=self.parent_window
+        )
+        md.add_response("cancel", "Cancel")
+        md.add_response("ok", "Restore")
+        md.set_response_appearance("ok", Adw.ResponseAppearance.DESTRUCTIVE)
+
+        def _on_confirm(diag, res):
+            if res != "ok":
+                return
+            parent_dlg.close()
+            script = (
+                f"cp -f '{backup_path}' /etc/default/grub\n"
+                f"if command -v update-grub >/dev/null 2>&1; then\n"
+                f"    update-grub\n"
+                f"elif command -v grub2-mkconfig >/dev/null 2>&1; then\n"
+                f"    grub2-mkconfig -o /boot/grub2/grub.cfg\n"
+                f"else\n"
+                f"    grub-mkconfig -o /boot/grub/grub.cfg\n"
+                f"fi\n"
+            )
+            dlg = CommandDialog(title="Restoring GRUB backup", script_content=script, parent_window=self.parent_window)
+            safe_present(dlg, self.parent_window)
+            self.parent_window.show_toast("GRUB backup restored!")
+
+        md.connect("response", _on_confirm)
+        md.present()
+
     def _on_advanced_settings(self, btn):
         safe_present(AdvancedSettingsDialog(self, self.defaults), self)
 
@@ -1554,6 +1678,6 @@ class GrubCustomizerDialog(Adw.Dialog):
             f"    grub-mkconfig -o /boot/grub/grub.cfg\n"
             f"fi\n"
         )
-        dlg = CommandDialog(title="Saving GRUB configuration", script_content=script)
+        dlg = CommandDialog(title="Saving GRUB configuration", script_content=script, parent_window=self.parent_window)
         safe_present(dlg, self.parent_window)
         self.close()

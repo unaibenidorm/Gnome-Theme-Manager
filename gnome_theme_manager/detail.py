@@ -77,6 +77,17 @@ class ThemeDetailView(Gtk.Box):
         urls = api.get_preview_urls(data)
         if urls:
             threading.Thread(target=self._load_img, args=(urls[0],), daemon=True).start()
+        elif cat_key == "plymouth":
+            t_name = data.get("name", "")
+            base = Path("/usr/share/plymouth/themes") / t_name
+            if base.exists():
+                img_path = base / "throbber-0000.png"
+                if not img_path.exists():
+                    img_path = base / "header-image.png"
+                if img_path.exists():
+                    try:
+                        self.preview.set_filename(str(img_path))
+                    except Exception: pass
 
         # Gallery thumbnails
         if len(urls) > 1:
@@ -205,6 +216,12 @@ class ThemeDetailView(Gtk.Box):
             self.apply_btn.add_css_class("suggested-action")
             self.apply_btn.connect("clicked", self._on_apply_btn_clicked)
             
+            if cat_key == "plymouth":
+                self.test_splash_btn = Gtk.Button(icon_name="media-playback-start-symbolic")
+                self.test_splash_btn.set_tooltip_text("Live Fullscreen Test (Requires Polkit)")
+                self.test_splash_btn.connect("clicked", lambda b: self._test_plymouth_splash(data.get("name", "") if not is_installed else (installer.get_plymouth_variants(data.get("name", ""))[0].parent.name if installer.get_plymouth_variants(data.get("name", "")) else data.get("name", ""))))
+                bbox.append(self.test_splash_btn)
+
             # We don't show Apply for GDM as it's not supported in modern GNOME (>= 40)
             if cat_key != "gdm":
                 bbox.append(self.apply_btn)
@@ -644,7 +661,8 @@ class ThemeDetailView(Gtk.Box):
             if hasattr(self, 'undo_btn') and self.prev_theme:
                 self.undo_btn.set_visible(True)
         else:
-            self.window.show_toast(f"⚠ Installed but could not be applied: {msg}")
+            import sys; sys.stderr.write(f"[GTM] Apply failed for '{name}' ({self.cat_key}): {msg}\n")
+            self.window.show_toast(f"⚠ Could not apply theme: {msg}")
 
     def _undo_apply_btn_clicked(self):
         if not self.prev_theme: return
@@ -660,6 +678,26 @@ class ThemeDetailView(Gtk.Box):
             self.window.show_toast(f"↩ Restored to: {prev_name}")
             if hasattr(self, 'undo_btn'): self.undo_btn.set_visible(False)
             self.prev_theme = ""
+
+    def _test_plymouth_splash(self, theme_name):
+        import tempfile, os, subprocess
+        script = f"""#!/bin/bash
+plymouth-set-default-theme -R "{theme_name}"
+plymouthd
+plymouth --show-splash
+sleep 6
+plymouth quit
+"""
+        tf = tempfile.NamedTemporaryFile(mode='w', delete=False)
+        tf.write(script)
+        tf.close()
+        self.window.show_toast(f"Testing {theme_name} splash screen...")
+        
+        def run_test():
+            subprocess.run(["pkexec", "bash", tf.name])
+            os.unlink(tf.name)
+            
+        threading.Thread(target=run_test, daemon=True).start()
 
     def _apply_system_theme(self, name, cat_key):
         from .widgets import CommandDialog
@@ -754,7 +792,7 @@ class ThemeDetailView(Gtk.Box):
         else: 
             script = installer.get_plymouth_post_install_script(str(variant_path))
         
-        dlg = CommandDialog(title=f"Applying {cat_key.upper()} theme", script_content=script)
+        dlg = CommandDialog(title=f"Applying {cat_key.upper()} theme", script_content=script, parent_window=self.window)
         dlg.present(self.window)
 
     def _run_system_apply_script(self, cat_key, variant_path):
@@ -763,6 +801,6 @@ class ThemeDetailView(Gtk.Box):
             script = installer.get_grub_post_install_script(str(variant_path))
         else:
             script = installer.get_plymouth_post_install_script(str(variant_path))
-        dlg = CommandDialog(title=f"Applying {cat_key.upper()} theme", script_content=script)
+        dlg = CommandDialog(title=f"Applying {cat_key.upper()} theme", script_content=script, parent_window=self.window)
         dlg.present(self.window)
 

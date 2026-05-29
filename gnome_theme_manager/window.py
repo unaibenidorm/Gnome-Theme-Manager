@@ -137,6 +137,9 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         grub_btn = Gtk.Button(label="🛠 GRUB Customizer"); grub_btn.connect("clicked", self._show_grub_customizer)
         bb.append(grub_btn)
         
+        plymouth_btn = Gtk.Button(label="🎨 Plymouth Creator"); plymouth_btn.connect("clicked", self._show_plymouth_creator)
+        bb.append(plymouth_btn)
+        
         pb = Gtk.Button(label="⚙ Preferences"); pb.connect("clicked", self._show_prefs)
         bb.append(pb)
         ab = Gtk.Button(label="About"); ab.connect("clicked", self._show_about)
@@ -896,6 +899,30 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
                 pg.add(Adw.ActionRow(title=f"{cat['title']} ({scope})", subtitle=str(path)))
         vb.append(pg)
 
+        # Dependencies
+        dep_group = Adw.PreferencesGroup(title="System Dependencies")
+        deps = installer.check_dependencies()
+        all_installed = True
+        
+        for dep_name, is_installed in deps.items():
+            row = Adw.ActionRow(title=dep_name.capitalize())
+            if is_installed:
+                lbl = Gtk.Label(label="Installed", css_classes=["success"])
+            else:
+                lbl = Gtk.Label(label="Missing", css_classes=["error"])
+                all_installed = False
+            row.add_suffix(lbl)
+            dep_group.add(row)
+            
+        if not all_installed:
+            cmd_row = Adw.ActionRow(title="Install missing packages", subtitle=installer.get_install_command_for_distro())
+            cmd_btn = Gtk.Button(icon_name="edit-copy-symbolic", valign=Gtk.Align.CENTER)
+            cmd_btn.connect("clicked", lambda b: (self.get_clipboard().set(installer.get_install_command_for_distro()), self.show_toast("Command copied to clipboard!")))
+            cmd_row.add_suffix(cmd_btn)
+            dep_group.add(cmd_row)
+            
+        vb.append(dep_group)
+
         # Help and Support
         hg = Adw.PreferencesGroup(title="Help and Support")
         t_row = Adw.ActionRow(title="Welcome Tutorial", subtitle="Replay the application onboarding walkthrough")
@@ -1166,3 +1193,11 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
             self.show_toast("Autenticación cancelada. No se pudo cargar la configuración de GRUB.")
         except Exception as e:
             self.show_toast(f"No se pudo abrir Grub Customizer: {e}")
+
+    def _show_plymouth_creator(self, btn):
+        from .plymouth_creator import PlymouthCreatorDialog
+        try:
+            dialog = PlymouthCreatorDialog(self)
+            dialog.present(self)
+        except Exception as e:
+            self.show_toast(f"Could not open Plymouth Creator: {e}")

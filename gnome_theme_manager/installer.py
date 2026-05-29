@@ -6,6 +6,30 @@ import os, shutil, subprocess, tarfile, zipfile, tempfile, re, configparser, jso
 from pathlib import Path
 SECURE_CACHE = {}
 
+def check_dependencies():
+    """Returns a dictionary of dependency statuses."""
+    deps = {
+        "ffmpeg": shutil.which("ffmpeg") is not None,
+        "imagemagick": shutil.which("convert") is not None or shutil.which("magick") is not None,
+        "plymouth": shutil.which("plymouth-set-default-theme") is not None or shutil.which("plymouth") is not None,
+        "git": shutil.which("git") is not None,
+        "pkexec": shutil.which("pkexec") is not None
+    }
+    return deps
+
+def get_install_command_for_distro():
+    """Returns the package manager install command based on distro."""
+    if shutil.which("dnf"):
+        return "sudo dnf install ffmpeg imagemagick plymouth git polkit"
+    elif shutil.which("apt-get"):
+        return "sudo apt-get install ffmpeg imagemagick plymouth git polkitd"
+    elif shutil.which("pacman"):
+        return "sudo pacman -S ffmpeg imagemagick plymouth git polkit"
+    elif shutil.which("zypper"):
+        return "sudo zypper install ffmpeg imagemagick plymouth git polkit"
+    else:
+        return "Install dependencies: ffmpeg, imagemagick, plymouth, git, polkit"
+
 def get_install_paths():
     home = Path.home()
     # Detect GRUB path (Ubuntu: grub, Fedora: grub2)
@@ -663,20 +687,22 @@ def get_plymouth_post_install_script(variant_path):
     theme_id = p_file.stem
     
     return f"""#!/bin/bash
+export PATH=$PATH:/usr/sbin:/usr/bin:/sbin:/bin
+
 # Ensure the theme is recognized by Plymouth
 if command -v plymouth-set-default-theme >/dev/null 2>&1; then
     # We use the filename (stem) as it's the standard identifier
-    plymouth-set-default-theme "{theme_id}"
+    plymouth-set-default-theme -R "{theme_id}"
 elif command -v update-alternatives >/dev/null 2>&1; then
     update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth "{variant_path}" 200
     update-alternatives --set default.plymouth "{variant_path}"
-fi
-
-# Regenerate initramfs
-            if command -v update-initramfs >/dev/null 2>&1; then
-    update-initramfs -u
-elif command -v dracut >/dev/null 2>&1; then
-    dracut -f
+    
+    # Regenerate initramfs
+    if command -v update-initramfs >/dev/null 2>&1; then
+        update-initramfs -u
+    elif command -v dracut >/dev/null 2>&1; then
+        dracut -f
+    fi
 fi
 """
 
@@ -786,6 +812,8 @@ def get_plymouth_variants(theme_name):
                 if theme_name.lower() in d.name.lower() or d.name.lower() in theme_name.lower():
                     pfs = list(d.rglob("*.plymouth"))
                     candidates.extend(pfs)
+        
+        if candidates: return candidates
         
         # If no folder match, look for ANY .plymouth file matching the name
         if not candidates:
@@ -943,9 +971,31 @@ def get_active_plymouth_theme():
     except Exception: pass
     return ""
 
+def _get_clean_env():
+    """Return a clean environment for gsettings calls.
+    Conda/mamba environments can pollute GIO/GSettings paths,
+    causing gsettings to write to a different dconf backend
+    than the user's actual GNOME session."""
+    env = os.environ.copy()
+    # Remove conda/mamba vars that can interfere with GSettings/GIO
+    for var in ["GSETTINGS_SCHEMA_DIR", "GIO_EXTRA_MODULES",
+                "GIO_MODULE_DIR", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"]:
+        env.pop(var, None)
+    # Ensure LD_LIBRARY_PATH doesn't pull in conda's libgio
+    ld = env.get("LD_LIBRARY_PATH", "")
+    if ld:
+        parts = [p for p in ld.split(":") if "conda" not in p and "mamba" not in p]
+        env["LD_LIBRARY_PATH"] = ":".join(parts) if parts else ""
+    # Force system XDG schema dir
+    env["GSETTINGS_SCHEMA_DIR"] = "/usr/share/glib-2.0/schemas"
+    return env
+
 def _gsettings_set(schema, key, value):
     try:
-        r = subprocess.run(["gsettings", "set", schema, key, value], capture_output=True, text=True, timeout=5)
+        env = _get_clean_env()
+        gsettings_bin = "/usr/bin/gsettings" if os.path.exists("/usr/bin/gsettings") else "gsettings"
+        r = subprocess.run([gsettings_bin, "set", schema, key, value],
+                           capture_output=True, text=True, timeout=5, env=env)
         if r.returncode != 0:
             err = r.stderr.strip()
             if "No such schema" in err or "No existe el esquema" in err:
@@ -959,7 +1009,10 @@ def _gsettings_set(schema, key, value):
 
 def _gsettings_get(schema, key):
     try:
-        r = subprocess.run(["gsettings", "get", schema, key], capture_output=True, text=True, timeout=5)
+        env = _get_clean_env()
+        gsettings_bin = "/usr/bin/gsettings" if os.path.exists("/usr/bin/gsettings") else "gsettings"
+        r = subprocess.run([gsettings_bin, "get", schema, key],
+                           capture_output=True, text=True, timeout=5, env=env)
         return r.stdout.strip().strip("'") if r.returncode == 0 else ""
     except Exception:
         return ""
