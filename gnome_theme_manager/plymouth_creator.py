@@ -197,6 +197,7 @@ class PlymouthCreatorDialog(Adw.Dialog):
         self.blur_spin.connect("value-changed", lambda _: self._update_preview_bg())
         blur_row.add_suffix(self.blur_spin)
         group_media.add(blur_row)
+        
         color_start_row = Adw.ActionRow(title="Gradient Start Color (Top)")
         self.btn_col_start = Gtk.ColorDialogButton(valign=Gtk.Align.CENTER)
         self.btn_col_start.set_dialog(Gtk.ColorDialog(title="Select Start Color"))
@@ -628,19 +629,79 @@ class PlymouthCreatorDialog(Adw.Dialog):
         self.name_entry.set_text(theme_name)
         
         bg_png = work_dir / "background.png"
+        bg_anim = work_dir / "bg-0000.png"
         throbber = work_dir / "throbber-0000.png"
+        logo2 = work_dir / "logo2.png"
+        os_logo = work_dir / "os-logo.png"
+
+        opts = {}
+        config_file = work_dir / ".gtm-config.json"
+        if config_file.exists():
+            try:
+                import json
+                with open(config_file, "r", encoding="utf-8") as f:
+                    opts = json.load(f)
+            except Exception as e:
+                print("Failed to load theme config:", e)
+
+        orig_bg = opts.get("original_bg_path", "")
+        orig_os = opts.get("original_os_logo_path", "")
+        orig_s2 = opts.get("original_source_path_2", "")
+        orig_s = opts.get("original_source_path", "")
+
         if not throbber.exists(): throbber = work_dir / "animation-0000.png"
-        if bg_png.exists():
-            self.bg_path = str(bg_png)
-            if hasattr(self, 'btn_bg_file'): self.btn_bg_file.set_label("Existing Background")
+        
+        if bg_png.exists() or bg_anim.exists():
+            if orig_bg and os.path.exists(orig_bg):
+                self.bg_path = orig_bg
+                bg_label = os.path.basename(orig_bg)
+            else:
+                self.bg_path = str(bg_png) if bg_png.exists() else str(bg_anim)
+                bg_label = "Existing Background"
+            if hasattr(self, 'btn_bg_file'): self.btn_bg_file.set_label(bg_label)
             if hasattr(self, 'btn_clear_bg'): self.btn_clear_bg.set_sensitive(True)
             self._update_preview_bg()
+            
         if throbber.exists():
-            self.preview_img.set_file(Gio.File.new_for_path(str(throbber)))
-            self.preview_img.set_visible(True)
-            self.btn_file.set_label("Existing Animation")
+            if orig_s and os.path.exists(orig_s):
+                self.source_path = orig_s
+                s_label = os.path.basename(orig_s)
+                self.preview_img.set_visible(True)
+                ext = orig_s.lower()
+                if ext.endswith((".mp4", ".mkv", ".avi", ".webm")):
+                    self._start_video_preview(orig_s)
+                elif ext.endswith(".gif"):
+                    self._start_gif_preview(orig_s)
+                else:
+                    self.preview_img.set_file(Gio.File.new_for_path(orig_s))
+            else:
+                self.source_path = str(throbber)
+                s_label = "Existing Animation"
+                self.preview_img.set_file(Gio.File.new_for_path(str(throbber)))
+                self.preview_img.set_visible(True)
+                
+            self.btn_file.set_label(s_label)
             if hasattr(self, 'btn_clear_file'): self.btn_clear_file.set_sensitive(True)
-            self.source_path = str(throbber) # spoof it to bypass validation
+            
+        if logo2.exists():
+            if orig_s2 and os.path.exists(orig_s2):
+                self.source_path_2 = orig_s2
+                s2_label = os.path.basename(orig_s2)
+            else:
+                self.source_path_2 = str(logo2)
+                s2_label = "Existing Logo 2"
+            if hasattr(self, 'btn_file2'): self.btn_file2.set_label(s2_label)
+            if hasattr(self, 'btn_clear_file2'): self.btn_clear_file2.set_sensitive(True)
+            
+        if os_logo.exists():
+            if orig_os and os.path.exists(orig_os):
+                self.os_logo_path = orig_os
+                os_label = os.path.basename(orig_os)
+            else:
+                self.os_logo_path = str(os_logo)
+                os_label = "Existing OS Logo"
+            if hasattr(self, 'btn_os_logo'): self.btn_os_logo.set_label(os_label)
+            if hasattr(self, 'btn_clear_os_logo'): self.btn_clear_os_logo.set_sensitive(True)
 
         # Restore saved config if available
         config_file = work_dir / ".gtm-config.json"
@@ -689,6 +750,9 @@ class PlymouthCreatorDialog(Adw.Dialog):
         self.btn_bg_file.set_label("Choose Image")
         self.btn_clear_bg.set_sensitive(False)
         self._update_preview_bg()
+        if hasattr(self, 'editing_existing_dir') and self.editing_existing_dir:
+            for f in self.editing_existing_dir.glob("bg-*.png"): f.unlink(missing_ok=True)
+            (self.editing_existing_dir / "background.png").unlink(missing_ok=True)
 
     def _on_choose_os_logo(self, btn):
         dialog = Gtk.FileDialog(title="Select OS Logo")
@@ -714,6 +778,8 @@ class PlymouthCreatorDialog(Adw.Dialog):
         self.os_logo_path = None
         self.btn_os_logo.set_label("Custom Logo")
         self.btn_clear_os_logo.set_sensitive(False)
+        if hasattr(self, 'editing_existing_dir') and self.editing_existing_dir:
+            (self.editing_existing_dir / "os-logo.png").unlink(missing_ok=True)
 
     def _on_choose_bg_file(self, btn):
         dialog = Gtk.FileDialog(title="Select Background Image or Video")
@@ -763,6 +829,8 @@ class PlymouthCreatorDialog(Adw.Dialog):
         self.btn_file2.set_label("Choose Image")
         self.btn_clear_file2.set_sensitive(False)
         self.pulse_switch.set_active(False)
+        if hasattr(self, 'editing_existing_dir') and self.editing_existing_dir:
+            (self.editing_existing_dir / "logo2.png").unlink(missing_ok=True)
 
     def _on_file2_chosen(self, dialog, result):
         try:
@@ -783,6 +851,9 @@ class PlymouthCreatorDialog(Adw.Dialog):
         self.preview_img.set_visible(False)
         self.preview_img.set_paintable(None)
         self.preview_img.set_file(None)
+        if hasattr(self, 'editing_existing_dir') and self.editing_existing_dir:
+            for f in self.editing_existing_dir.glob("throbber-*.png"): f.unlink(missing_ok=True)
+            for f in self.editing_existing_dir.glob("animation-*.png"): f.unlink(missing_ok=True)
         if not self.bg_path and not self.os_switch.get_active() and not self.bgrt_switch.get_active():
             self.preview_container.set_visible(False)
 
@@ -792,6 +863,23 @@ class PlymouthCreatorDialog(Adw.Dialog):
             self._gif_timer_id = None
         self._gif_frames = []
         self._gif_frame_idx = 0
+
+    def _detect_fps(self, filepath):
+        try:
+            import subprocess
+            res = subprocess.run(
+                ["ffprobe", "-v", "0", "-of", "csv=p=0", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate", filepath],
+                capture_output=True, text=True, timeout=2
+            )
+            val = res.stdout.strip()
+            if val and "/" in val:
+                num, den = val.split("/")
+                return max(5, min(60, int(round(float(num) / float(den)))))
+            elif val:
+                return max(5, min(60, int(round(float(val)))))
+        except:
+            pass
+        return None
 
     def _on_file_chosen(self, dialog, result):
         try:
@@ -811,6 +899,11 @@ class PlymouthCreatorDialog(Adw.Dialog):
             self._gif_frames = []
 
             ext = self.source_path.lower()
+            if ext.endswith((".mp4", ".mkv", ".avi", ".webm", ".gif")):
+                fps = self._detect_fps(self.source_path)
+                if fps:
+                    self.fps_spin.set_value(fps)
+                    
             if ext.endswith((".mp4", ".mkv", ".avi", ".webm")):
                 self.preview_img.set_visible(True)
                 self.preview_img.set_paintable(None)
@@ -964,7 +1057,11 @@ class PlymouthCreatorDialog(Adw.Dialog):
             "bg_s": hex_start,
             "bg_e": hex_end,
             "pulse_secondary": self.pulse_switch.get_active(),
-            "rainbow_bg": self.rainbow_switch.get_active()
+            "rainbow_bg": self.rainbow_switch.get_active(),
+            "original_bg_path": self.bg_path if self.bg_path and not str(self.bg_path).startswith(str(Path.home() / ".config")) else getattr(self, "original_bg_path", ""),
+            "original_os_logo_path": self.os_logo_path if self.os_logo_path and not str(self.os_logo_path).startswith(str(Path.home() / ".config")) else getattr(self, "original_os_logo_path", ""),
+            "original_source_path_2": getattr(self, 'source_path_2', "") if getattr(self, 'source_path_2', None) and not str(getattr(self, 'source_path_2', "")).startswith(str(Path.home() / ".config")) else getattr(self, "original_source_path_2", ""),
+            "original_source_path": self.source_path if self.source_path and not str(self.source_path).startswith(str(Path.home() / ".config")) else getattr(self, "original_source_path", "")
         }
         threading.Thread(target=self._generate, args=(name, self.source_path, self.bg_path, hex_start, hex_end, opts), daemon=True).start()
 
@@ -1036,8 +1133,10 @@ class PlymouthCreatorDialog(Adw.Dialog):
                     ext = bg_source.lower()
                     if ext.endswith((".mp4", ".mkv", ".webm", ".avi", ".gif")):
                         import subprocess
-                        subprocess.run(["ffmpeg", "-i", bg_source, "-vf", "fps=10,scale=1920:1080", "-start_number", "0", "-vframes", "30", os.path.join(theme_dir, "bg-%04d.png")], check=True)
+                        bg_fps = self._detect_fps(bg_source) or 24
+                        subprocess.run(["ffmpeg", "-i", bg_source, "-vf", f"fps={bg_fps},scale=1920:1080", "-start_number", "0", os.path.join(theme_dir, "bg-%04d.png")], check=True)
                         has_animated_bg = True
+                        opts["_internal_bg_fps"] = bg_fps
                         if opts.get("blur_radius", 0) > 0:
                             for frame in Path(theme_dir).glob("bg-*.png"):
                                 subprocess.run(["convert", str(frame), "-blur", f"0x{opts.get('blur_radius')}", str(frame)], check=True)
@@ -1134,7 +1233,7 @@ global.bg_sprite = Sprite();
 global.bg_images = [];
 screen_width = Window.GetWidth();
 screen_height = Window.GetHeight();
-for (i = 0; i < 30; i++) {
+for (i = 0; i < 1000; i++) {
     index_str = i;
     if (i < 10) index_str = "000" + i;
     else if (i < 100) index_str = "00" + i;
@@ -1450,7 +1549,7 @@ fun refresh_callback() {{
     progress += {opts.get("fps", 24) / 50.0:.3f};
     if (global.num_bg_frames > 0) {{
         global.bg_sprite.SetImage(global.bg_images[Math.Int(global.bg_progress) % global.num_bg_frames]);
-        global.bg_progress += 0.2;
+        global.bg_progress += {opts.get('_internal_bg_fps', 24) / 50.0:.3f};
     }}
 }}
 Plymouth.SetRefreshFunction(refresh_callback);
@@ -1559,19 +1658,49 @@ ScriptFile=/usr/share/plymouth/themes/{name}/{name}.script
         """Execute the plymouthd preview in a subprocess."""
         try:
             from .widgets import CommandDialog
-            debug_log = f"/tmp/plymouth_debug_{name}.log"
             script = f"""#!/bin/bash
 export PATH=$PATH:/usr/sbin:/usr/bin:/sbin:/bin
+
+echo "=== Plymouth Preview ==="
 
 # Copy theme files for preview
 mkdir -p /usr/share/plymouth/themes/{name}
 cp -r "{theme_dir}/"* /usr/share/plymouth/themes/{name}/
+echo "[1/6] Theme files copied."
 
-# Save and override the default theme in plymouthd.conf
+# Save the currently active theme so we can restore it later
+PREV_THEME=""
+if command -v plymouth-set-default-theme >/dev/null 2>&1; then
+    PREV_THEME=$(plymouth-set-default-theme 2>/dev/null)
+    echo "[2/6] Current system theme: $PREV_THEME"
+fi
+
+# Backup plymouthd.conf
 PLY_CONF="/etc/plymouth/plymouthd.conf"
 if [ -f "$PLY_CONF" ]; then
     cp "$PLY_CONF" "$PLY_CONF.gtm_backup"
 fi
+
+# CRITICAL: Kill any existing plymouthd instance first.
+# If one is already running (residual from boot or a prior preview),
+# our new plymouthd will fail to bind the socket and plymouth --show-splash
+# will talk to the OLD daemon (showing the wrong theme).
+plymouth --quit 2>/dev/null || true
+sleep 0.5
+# Clean up stale PID and socket files
+rm -f /run/plymouth/pid 2>/dev/null || true
+rm -f /run/plymouth/socket 2>/dev/null || true
+killall plymouthd 2>/dev/null || true
+sleep 0.5
+echo "[3/6] Cleaned up any existing plymouthd."
+
+# Set the new theme as default using plymouth-set-default-theme (Fedora/RHEL)
+if command -v plymouth-set-default-theme >/dev/null 2>&1; then
+    plymouth-set-default-theme {name} 2>/dev/null
+    echo "[4/6] plymouth-set-default-theme set to '{name}'."
+fi
+
+# Also write to plymouthd.conf directly (Ubuntu/Debian fallback)
 mkdir -p /etc/plymouth
 cat > "$PLY_CONF" << EOFCONF
 [Daemon]
@@ -1579,22 +1708,29 @@ Theme={name}
 ShowDelay=0
 EOFCONF
 
-# Launch plymouthd and show splash
-plymouthd --debug --debug-file={debug_log}
+# Start a fresh plymouthd
+echo "[5/6] Starting plymouthd with theme '{name}'..."
+plymouthd --mode=boot --kernel-command-line="quiet splash"
+sleep 1
+
+# Show the splash
 plymouth --show-splash
+echo "[6/6] Splash shown. Running for {secs} seconds..."
 
-echo "Plymouth preview running... Press any key to stop."
-
-# Loop with key detection: press any key to quit early
+# Simulate boot updates
 for ((I=0; I<{secs}; I++)); do
-    if read -t 1 -n 1 2>/dev/null; then
-        break
-    fi
+    sleep 1
     plymouth --update=test$I 2>/dev/null || true
 done
 
 # Quit plymouth
 plymouth --quit
+
+# Restore the previous theme
+if [ -n "$PREV_THEME" ] && command -v plymouth-set-default-theme >/dev/null 2>&1; then
+    plymouth-set-default-theme "$PREV_THEME" 2>/dev/null
+    echo "Restored theme: $PREV_THEME"
+fi
 
 # Restore original plymouthd.conf
 if [ -f "$PLY_CONF.gtm_backup" ]; then
@@ -1624,6 +1760,38 @@ echo "Preview complete."
 export PATH=$PATH:/usr/sbin:/usr/bin:/sbin:/bin
 mkdir -p /usr/share/plymouth/themes/
 cp -r "{self.created_theme_dir}" /usr/share/plymouth/themes/
+
+# Ensure the Plymouth script plugin is installed (required for custom themes)
+SCRIPT_SO=""
+for p in /usr/lib64/plymouth/script.so /usr/lib/x86_64-linux-gnu/plymouth/script.so /usr/lib/plymouth/script.so; do
+    if [ -f "$p" ]; then
+        SCRIPT_SO="$p"
+        break
+    fi
+done
+
+if [ -z "$SCRIPT_SO" ]; then
+    echo "Plymouth script plugin (script.so) not found. Attempting to install..."
+    if command -v dnf >/dev/null 2>&1; then
+        dnf install -y plymouth-plugin-script
+    elif command -v apt-get >/dev/null 2>&1; then
+        apt-get install -y plymouth-themes
+    elif command -v pacman >/dev/null 2>&1; then
+        pacman -S --noconfirm plymouth
+    fi
+    # Verify it was installed
+    for p in /usr/lib64/plymouth/script.so /usr/lib/x86_64-linux-gnu/plymouth/script.so /usr/lib/plymouth/script.so; do
+        if [ -f "$p" ]; then
+            SCRIPT_SO="$p"
+            break
+        fi
+    done
+    if [ -z "$SCRIPT_SO" ]; then
+        echo "ERROR: Could not install plymouth-plugin-script. Please install it manually."
+        exit 1
+    fi
+    echo "Plymouth script plugin installed successfully."
+fi
 
 # Configure ShowDelay via systemd override
 if [ {delay_val} -gt 0 ]; then
