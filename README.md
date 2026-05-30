@@ -1,6 +1,6 @@
 # 🎨 Gnome Theme Manager
 
-![Python](https://img.shields.io/badge/Python-3.x-blue?style=for-the-badge&logo=python) ![GTK4](https://img.shields.io/badge/GTK-4.0-green?style=for-the-badge&logo=gtk) ![Libadwaita](https://img.shields.io/badge/Libadwaita-1.x-purple?style=for-the-badge&logo=gnome) ![AUR](https://img.shields.io/aur/version/gnome-theme-manager?style=for-the-badge&logo=archlinux&label=AUR) ![License](https://img.shields.io/badge/License-GPLv3-blue?style=for-the-badge)
+![Python](https://img.shields.io/badge/Python-3.x-blue?style=for-the-badge&logo=python) ![GTK4](https://img.shields.io/badge/GTK-4.0-green?style=for-the-badge&logo=gtk) ![Libadwaita](https://img.shields.io/badge/Libadwaita-1.x-purple?style=for-the-badge&logo=gnome) ![License](https://img.shields.io/badge/License-GPLv3-blue?style=for-the-badge)
 
 A modern, native GTK4/Libadwaita application designed to seamlessly browse, download, install, and apply GNOME themes and customizations directly from [gnome-look.org](https://www.gnome-look.org/).
 
@@ -8,7 +8,8 @@ A modern, native GTK4/Libadwaita application designed to seamlessly browse, down
 > This software is currently in **Beta**. It is under active development and you may encounter unexpected bugs, crashes, or incomplete features. Use it at your own risk, especially when applying system-wide themes.
 
 <p align="center">
-  <i><img width="1100" height="740" alt="image" src="https://github.com/user-attachments/assets/f05613a5-856d-42ea-b4e5-d374a04ee6c7" /></i>
+  <i><img width="1816" height="1236" alt="image" src="https://github.com/user-attachments/assets/a64a80a6-4b03-4d6e-ae1f-b3d4a0762d15" />
+</i>
 </p>
 
 ## ✨ Features
