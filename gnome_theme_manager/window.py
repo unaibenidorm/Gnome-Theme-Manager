@@ -159,6 +159,7 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         bv.append(self.status)
 
         sw = Gtk.ScrolledWindow(vexpand=True)
+        self.browse_sw = sw  # Keep reference for scroll-to-top on page change
         self.flow = Gtk.FlowBox(); self.flow.set_valign(Gtk.Align.START)
         if self.list_view:
             self.flow.set_max_children_per_line(1); self.flow.set_min_children_per_line(1)
@@ -448,6 +449,9 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         self.pg_lbl.set_label(f"{self.cur_page+1} / {mx+1}")
         self.prev.set_sensitive(self.cur_page>0); self.nxt.set_sensitive(self.cur_page<mx)
         self.loading = False
+        # Scroll browse view to top on page/content change (fixes #1)
+        adj = self.browse_sw.get_vadjustment()
+        if adj: adj.set_value(0)
 
     def show_toast(self, msg):
         self.toast.add_toast(Adw.Toast(title=msg, timeout=2))
