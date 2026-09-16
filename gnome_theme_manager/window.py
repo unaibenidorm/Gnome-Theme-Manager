@@ -367,7 +367,14 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
 
     def _on_sort(self, dd, _):
         sk = ["new","score","down","alpha"]; i = dd.get_selected()
-        if 0 <= i < len(sk): self.cur_sort = sk[i]; self.cur_page = 0; self._load_themes()
+        if 0 <= i < len(sk):
+            self.cur_sort = sk[i]; self.cur_page = 0
+            # Close the filter popover so the UI doesn't appear locked (fixes #3)
+            popover = dd.get_ancestor(Gtk.Popover)
+            if popover: popover.popdown()
+            # Reset loading flag to prevent dropped requests
+            self.loading = False
+            self._load_themes()
 
     def _on_theme(self, fb, child):
         if hasattr(child, 'data') and hasattr(child, 'category_key'):
