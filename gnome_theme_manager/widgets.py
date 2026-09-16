@@ -1,8 +1,29 @@
 """Reusable widgets: ThemeCard and ImageViewer."""
 import gi, threading
 gi.require_version('Gtk','4.0'); gi.require_version('Adw','1'); gi.require_version('GdkPixbuf','2.0')
-from gi.repository import Gtk, Adw, GLib, GdkPixbuf, Gdk
+from gi.repository import Gtk, Adw, GLib, GdkPixbuf, Gdk, GObject
 from . import api
+
+class FixedPaintable(GObject.Object, Gdk.Paintable):
+    """Wraps a texture with fixed intrinsic dimensions so GTK FlowBox calculates grid columns cleanly without wide images blowing up column layout."""
+    def __init__(self, texture, target_w=210, target_h=148):
+        super().__init__()
+        self.texture = texture
+        self.target_w = target_w
+        self.target_h = target_h
+
+    def do_get_intrinsic_width(self):
+        return self.target_w
+
+    def do_get_intrinsic_height(self):
+        return self.target_h
+
+    def do_get_intrinsic_aspect_ratio(self):
+        return self.target_w / self.target_h if self.target_h > 0 else 0
+
+    def do_snapshot(self, snapshot, width, height):
+        if self.texture:
+            self.texture.snapshot(snapshot, width, height)
 
 class ThemeCard(Gtk.FlowBoxChild):
     def __init__(self, data, cat_key, is_installed=False, low_perf=False, list_view=False):
@@ -19,7 +40,6 @@ class ThemeCard(Gtk.FlowBoxChild):
             
             self.pic = Gtk.Picture()
             self.pic.set_size_request(80, 60)
-            self.pic.set_can_shrink(True)
             self.pic.set_content_fit(Gtk.ContentFit.COVER)
             
             fr = Gtk.Frame(); fr.set_child(self.pic); fr.add_css_class("theme-thumb-frame")
@@ -69,7 +89,6 @@ class ThemeCard(Gtk.FlowBoxChild):
             
             self.pic = Gtk.Picture()
             self.pic.set_size_request(210, 148)
-            self.pic.set_can_shrink(True)
             self.pic.set_content_fit(Gtk.ContentFit.COVER)
             
             fr = Gtk.Frame(); fr.set_child(self.pic); fr.add_css_class("theme-thumb-frame")
@@ -119,12 +138,10 @@ class ThemeCard(Gtk.FlowBoxChild):
             lo = GdkPixbuf.PixbufLoader(); lo.write(d); lo.close()
             pb = lo.get_pixbuf()
             if pb:
-                # Scale down preview image so large textures don't prevent FlowBox from adding columns
-                max_w = 160 if self.list_view else 420
-                if pb.get_width() > max_w:
-                    h = int(max_w * pb.get_height() / pb.get_width())
-                    pb = pb.scale_simple(max_w, max(1, h), GdkPixbuf.InterpType.BILINEAR)
-                self.pic.set_paintable(Gdk.Texture.new_for_pixbuf(pb))
+                tex = Gdk.Texture.new_for_pixbuf(pb)
+                tw = 80 if self.list_view else 210
+                th = 60 if self.list_view else 148
+                self.pic.set_paintable(FixedPaintable(tex, tw, th))
         except Exception: pass
 
 
