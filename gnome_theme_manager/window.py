@@ -165,36 +165,13 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
             self.flow.set_max_children_per_line(1); self.flow.set_min_children_per_line(1)
             self.flow.set_homogeneous(False)
         else:
-            self.flow.set_max_children_per_line(6); self.flow.set_min_children_per_line(1)
+            self.flow.set_max_children_per_line(10); self.flow.set_min_children_per_line(2)
             self.flow.set_homogeneous(True)
         self.flow.set_column_spacing(10); self.flow.set_row_spacing(10)
         self.flow.set_margin_start(14); self.flow.set_margin_end(14)
         self.flow.set_margin_top(10); self.flow.set_margin_bottom(10)
         self.flow.connect("child-activated", self._on_theme)
         sw.set_child(self.flow); bv.append(sw)
-
-        # Dynamic column adaptation based on content width (fixes #2)
-        self._last_col_count = -1
-        def _on_content_resize(widget, width, height):
-            if self.list_view:
-                return
-            card_w = 230  # card min width + spacing
-            cols = max(1, width // card_w)
-            cols = min(cols, 6)
-            if cols != self._last_col_count:
-                self._last_col_count = cols
-                self.flow.set_min_children_per_line(max(1, cols))
-                self.flow.set_max_children_per_line(max(cols, 2))
-        sw.connect("notify::default-width", lambda *a: None)  # placeholder
-        # Use the content area's size-allocate via a layout manager callback
-        resize_ctrl = Gtk.EventControllerMotion.new()  # lightweight controller
-        sw.add_controller(resize_ctrl)
-        # Actually use the flow's parent allocation
-        self.flow.connect("notify::allocation", lambda *a: _on_content_resize(
-            self.flow,
-            self.flow.get_allocated_width(),
-            self.flow.get_allocated_height()
-        ) if self.flow.get_allocated_width() > 0 else None)
 
         pg = Gtk.Box(spacing=10, halign=Gtk.Align.CENTER)
         pg.set_margin_bottom(10); pg.set_margin_top(6)
@@ -328,10 +305,9 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
             self.flow.set_min_children_per_line(1)
             self.flow.set_homogeneous(False)
         else:
-            self.flow.set_max_children_per_line(6)
-            self.flow.set_min_children_per_line(1)
+            self.flow.set_max_children_per_line(10)
+            self.flow.set_min_children_per_line(2)
             self.flow.set_homogeneous(True)
-            self._last_col_count = -1  # Reset dynamic column tracking
             
         self.loading = False
         self._load_themes()

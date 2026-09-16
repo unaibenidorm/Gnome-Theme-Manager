@@ -19,6 +19,7 @@ class ThemeCard(Gtk.FlowBoxChild):
             
             self.pic = Gtk.Picture()
             self.pic.set_size_request(80, 60)
+            self.pic.set_can_shrink(True)
             self.pic.set_content_fit(Gtk.ContentFit.COVER)
             
             fr = Gtk.Frame(); fr.set_child(self.pic); fr.add_css_class("theme-thumb-frame")
@@ -68,6 +69,7 @@ class ThemeCard(Gtk.FlowBoxChild):
             
             self.pic = Gtk.Picture()
             self.pic.set_size_request(210, 148)
+            self.pic.set_can_shrink(True)
             self.pic.set_content_fit(Gtk.ContentFit.COVER)
             
             fr = Gtk.Frame(); fr.set_child(self.pic); fr.add_css_class("theme-thumb-frame")
@@ -116,7 +118,13 @@ class ThemeCard(Gtk.FlowBoxChild):
         try:
             lo = GdkPixbuf.PixbufLoader(); lo.write(d); lo.close()
             pb = lo.get_pixbuf()
-            if pb: self.pic.set_paintable(Gdk.Texture.new_for_pixbuf(pb))
+            if pb:
+                # Scale down preview image so large textures don't prevent FlowBox from adding columns
+                max_w = 160 if self.list_view else 420
+                if pb.get_width() > max_w:
+                    h = int(max_w * pb.get_height() / pb.get_width())
+                    pb = pb.scale_simple(max_w, max(1, h), GdkPixbuf.InterpType.BILINEAR)
+                self.pic.set_paintable(Gdk.Texture.new_for_pixbuf(pb))
         except Exception: pass
 
 
