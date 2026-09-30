@@ -1,4 +1,6 @@
 import os
+import re
+import shlex
 import shutil
 import tempfile
 import threading
@@ -29,20 +31,6 @@ class PlymouthCreatorDialog(Adw.Dialog):
         self._gif_frame_idx = 0
         self._anim_preview_id = None
         self._build_ui()
-        self._load_system_delay()
-
-    def _load_system_delay(self):
-        """Read the current system-level plymouth delay from the systemd override, if present."""
-        try:
-            conf = Path("/etc/systemd/system/plymouth-quit.service.d/super_long_splash.conf")
-            if conf.exists():
-                import re
-                text = conf.read_text()
-                m = re.search(r'ExecStartPre=/usr/bin/sleep\s+(\d+)', text)
-                if m:
-                    self.delay_spin.set_value(int(m.group(1)))
-        except Exception:
-            pass
 
     def _build_ui(self):
         tb = Adw.ToolbarView()
@@ -258,13 +246,6 @@ class PlymouthCreatorDialog(Adw.Dialog):
 
         # Extras and Progress
         group_msg = Adw.PreferencesGroup(title="Extras and Progress Bar")
-
-        delay_row = Adw.ActionRow(title="Plymouth Duration (s)", subtitle="Extends how long the splash stays visible before GDM (applies globally to all themes)")
-        self.delay_spin = Gtk.SpinButton.new_with_range(0, 60, 1)
-        self.delay_spin.set_value(0)
-        self.delay_spin.set_valign(Gtk.Align.CENTER)
-        delay_row.add_suffix(self.delay_spin)
-        group_msg.add(delay_row)
 
         os_row = Adw.ActionRow(title="Show OS Logo", subtitle="Displays a logo at a fixed position")
         os_box = Gtk.Box(orientation=0, spacing=6, valign=Gtk.Align.CENTER)
@@ -722,7 +703,6 @@ class PlymouthCreatorDialog(Adw.Dialog):
                     anim_list = ["none", "fade_in", "slide_up", "slide_down", "scale_up", "bounce", "rotate_in"]
                     idx = anim_list.index(opts["entrance_anim"]) if opts["entrance_anim"] in anim_list else 0
                     self.entrance_anim_dd.set_selected(idx)
-                if "show_delay" in opts: getattr(self, "delay_spin").set_value(opts["show_delay"])
                 if "show_os" in opts: getattr(self, "os_switch").set_active(opts["show_os"])
                 if "os_valign" in opts and hasattr(self, "os_valign_dd"):
                     idx = ["bottom", "top", "center"].index(opts["os_valign"]) if opts["os_valign"] in ["bottom", "top", "center"] else 0
@@ -998,6 +978,9 @@ class PlymouthCreatorDialog(Adw.Dialog):
         if not name:
             self.show_toast("Theme name cannot be empty.")
             return
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name):
+            self.show_toast("Use a theme name with letters, numbers, dots, underscores, or hyphens.")
+            return
 
         # Block creation if theme already exists in system, unless we are editing an existing one
         theme_exists = False
@@ -1046,7 +1029,6 @@ class PlymouthCreatorDialog(Adw.Dialog):
             "roundness": int(self.round_spin.get_value()),
             "valign": ["center", "top", "bottom"][self.valign_dd.get_selected()],
             "entrance_anim": ["none", "fade_in", "slide_up", "slide_down", "scale_up", "bounce", "rotate_in"][self.entrance_anim_dd.get_selected()],
-            "show_delay": int(getattr(self, "delay_spin").get_value()) if hasattr(self, "delay_spin") else 0,
             "show_os": getattr(self, "os_switch").get_active() if hasattr(self, "os_switch") else False,
             "os_valign": ["bottom", "top", "center"][getattr(self, "os_valign_dd").get_selected()] if hasattr(self, "os_valign_dd") else "bottom",
             "blur_radius": int(getattr(self, "blur_spin").get_value()) if hasattr(self, "blur_spin") else 0,
@@ -1635,13 +1617,13 @@ ScriptFile=/usr/share/plymouth/themes/{name}/{name}.script
 
         name = self.created_theme_name
         theme_dir = self.created_theme_dir
-        delay = int(self.delay_spin.get_value()) if hasattr(self, 'delay_spin') else 10
-        preview_secs = max(delay, 10)  # At least 10 seconds preview
+        preview_secs = 10
 
         dlg = Adw.MessageDialog(
             transient_for=self.parent_window,
             heading="Preview Plymouth Theme",
-            body=f"This will run a {preview_secs}-second live preview of your theme using Plymouth.\nYou will need to enter your password (sudo).",
+            body=(f"This will run a {preview_secs}-second live preview of your theme using Plymouth.\n\n"
+                  "Administrator authentication is required to preview the Plymouth theme."),
         )
         dlg.add_response("cancel", "Cancel")
         dlg.add_response("preview", "Preview")
@@ -1658,14 +1640,16 @@ ScriptFile=/usr/share/plymouth/themes/{name}/{name}.script
         """Execute the plymouthd preview in a subprocess."""
         try:
             from .widgets import CommandDialog
+            quoted_theme_dir = shlex.quote(str(theme_dir))
+            quoted_name = shlex.quote(name)
             script = f"""#!/bin/bash
 export PATH=$PATH:/usr/sbin:/usr/bin:/sbin:/bin
 
 echo "=== Plymouth Preview ==="
 
 # Copy theme files for preview
-mkdir -p /usr/share/plymouth/themes/{name}
-cp -r "{theme_dir}/"* /usr/share/plymouth/themes/{name}/
+mkdir -p /usr/share/plymouth/themes/{quoted_name}
+cp -r {quoted_theme_dir}/. /usr/share/plymouth/themes/{quoted_name}/
 echo "[1/6] Theme files copied."
 
 # Save the currently active theme so we can restore it later
@@ -1696,7 +1680,7 @@ echo "[3/6] Cleaned up any existing plymouthd."
 
 # Set the new theme as default using plymouth-set-default-theme (Fedora/RHEL)
 if command -v plymouth-set-default-theme >/dev/null 2>&1; then
-    plymouth-set-default-theme {name} 2>/dev/null
+    plymouth-set-default-theme {quoted_name} 2>/dev/null
     echo "[4/6] plymouth-set-default-theme set to '{name}'."
 fi
 
@@ -1754,12 +1738,13 @@ echo "Preview complete."
     def _install_to_system(self):
         try:
             from .widgets import CommandDialog
-            delay_val = int(self.delay_spin.get_value()) if hasattr(self, 'delay_spin') else 0
+            quoted_theme_dir = shlex.quote(str(self.created_theme_dir))
+            quoted_theme_name = shlex.quote(self.created_theme_name)
             
             script = f"""#!/bin/bash
 export PATH=$PATH:/usr/sbin:/usr/bin:/sbin:/bin
 mkdir -p /usr/share/plymouth/themes/
-cp -r "{self.created_theme_dir}" /usr/share/plymouth/themes/
+cp -r {quoted_theme_dir} /usr/share/plymouth/themes/
 
 # Ensure the Plymouth script plugin is installed (required for custom themes)
 SCRIPT_SO=""
@@ -1793,24 +1778,13 @@ if [ -z "$SCRIPT_SO" ]; then
     echo "Plymouth script plugin installed successfully."
 fi
 
-# Configure ShowDelay via systemd override
-if [ {delay_val} -gt 0 ]; then
-    mkdir -p /etc/systemd/system/plymouth-quit.service.d
-    cat << 'EOF' > /etc/systemd/system/plymouth-quit.service.d/super_long_splash.conf
-[Unit]
-Description=Make Plymouth Boot Screen to last longer
-
-[Service]
-ExecStartPre=/usr/bin/sleep {delay_val}
-EOF
-    systemctl daemon-reload
-else
-    rm -f /etc/systemd/system/plymouth-quit.service.d/super_long_splash.conf
-    systemctl daemon-reload
-fi
+# Remove the legacy override created by older GTM versions. The creator no
+# longer changes the system-wide Plymouth duration.
+rm -f /etc/systemd/system/plymouth-quit.service.d/super_long_splash.conf
+systemctl daemon-reload
 
 if command -v plymouth-set-default-theme >/dev/null 2>&1; then
-    plymouth-set-default-theme -R "{self.created_theme_name}"
+    plymouth-set-default-theme -R {quoted_theme_name}
 elif command -v update-alternatives >/dev/null 2>&1; then
     variant_path="/usr/share/plymouth/themes/{self.created_theme_name}/{self.created_theme_name}.plymouth"
     update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth "$variant_path" 200

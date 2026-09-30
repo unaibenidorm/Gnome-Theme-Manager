@@ -2,7 +2,7 @@
 Theme Installer — automatic installation with pkexec for system ops.
 Also handles applying themes via gsettings (like gnome-tweaks).
 """
-import os, shutil, subprocess, tarfile, zipfile, tempfile, re, configparser, json, shlex
+import os, shutil, stat, subprocess, tarfile, zipfile, tempfile, re, configparser, json, shlex
 from pathlib import Path
 SECURE_CACHE = {}
 
@@ -16,6 +16,39 @@ def check_dependencies():
         "pkexec": shutil.which("pkexec") is not None
     }
     return deps
+
+def get_system_diagnostics():
+    """Return non-invasive checks that help diagnose installation issues."""
+    checks = []
+
+    def add(name, detail, ok):
+        checks.append((name, detail, ok))
+
+    add("PolicyKit", "Available for protected system changes" if shutil.which("pkexec") else "pkexec was not found", shutil.which("pkexec") is not None)
+    add("Plymouth", "Plymouth tools are available" if shutil.which("plymouth") else "Plymouth is not installed", shutil.which("plymouth") is not None)
+    add("GRUB tools", "A GRUB configuration tool is available" if (shutil.which("update-grub") or shutil.which("grub-mkconfig") or shutil.which("grub2-mkconfig")) else "No GRUB configuration tool was found", bool(shutil.which("update-grub") or shutil.which("grub-mkconfig") or shutil.which("grub2-mkconfig")))
+    add("Current session", "Running as administrator" if os.geteuid() == 0 else "Running as the current user", True)
+
+    for theme_type in ("grub", "plymouth"):
+        path = get_install_paths()[theme_type]["system"]
+        try:
+            exists = path.exists()
+            readable = os.access(path, os.R_OK | os.X_OK) if exists else False
+        except PermissionError:
+            exists = True
+            readable = False
+
+        if not exists:
+            detail = f"System directory does not exist: {path}"
+        elif readable:
+            detail = f"System directory is accessible: {path}"
+        else:
+            detail = f"Authentication is needed to access: {path}"
+        add(f"{theme_type.capitalize()} directory", detail, exists)
+
+    grub_defaults = Path("/etc/default/grub")
+    add("GRUB configuration", "Found /etc/default/grub" if grub_defaults.exists() else "No /etc/default/grub file was found", grub_defaults.exists())
+    return checks
 
 def get_install_command_for_distro():
     """Returns the package manager install command based on distro."""
@@ -137,6 +170,33 @@ def get_theme_dir(theme_type, scope="local"):
         return None
     return paths[theme_type][scope]
 
+MAX_ARCHIVE_MEMBERS = 10_000
+MAX_ARCHIVE_UNCOMPRESSED_SIZE = 1_024 * 1_024 * 1_024  # 1 GiB
+
+def _safe_archive_target(dest_dir, member_name):
+    """Return a member destination only when it remains inside ``dest_dir``."""
+    if not member_name or "\x00" in member_name:
+        raise ValueError("Invalid archive member name")
+    target = (dest_dir / member_name.replace("\\", "/")).resolve()
+    try:
+        target.relative_to(dest_dir.resolve())
+    except ValueError:
+        raise ValueError(f"Archive contains an unsafe path: {member_name}")
+    return target
+
+def _safe_archive_link(dest_dir, member_name, link_target):
+    """Allow relative archive links only when their resolved target stays inside it."""
+    if not link_target or Path(link_target).is_absolute():
+        raise ValueError(f"Archive contains an unsafe link: {member_name}")
+    return _safe_archive_target(dest_dir, str(Path(member_name).parent / link_target))
+
+def _check_archive_limits(members):
+    if len(members) > MAX_ARCHIVE_MEMBERS:
+        raise ValueError("Archive contains too many files")
+    total_size = sum(getattr(member, "size", getattr(member, "file_size", 0)) for member in members)
+    if total_size > MAX_ARCHIVE_UNCOMPRESSED_SIZE:
+        raise ValueError("Archive is too large after extraction")
+
 def extract_archive(archive_path, dest_dir):
     archive_path, dest_dir = Path(archive_path), Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -144,7 +204,15 @@ def extract_archive(archive_path, dest_dir):
     
     if name.endswith(".zip"):
         with zipfile.ZipFile(archive_path, "r") as zf:
-            zf.extractall(dest_dir)
+            members = zf.infolist()
+            _check_archive_limits(members)
+            for member in members:
+                _safe_archive_target(dest_dir, member.filename)
+                mode = member.external_attr >> 16
+                if stat.S_ISLNK(mode):
+                    _safe_archive_link(dest_dir, member.filename, zf.read(member).decode("utf-8", errors="strict"))
+            for member in members:
+                zf.extract(member, dest_dir)
     elif name.endswith(".rar"):
         if shutil.which("unrar"):
             r = subprocess.run(["unrar", "x", "-y", str(archive_path), str(dest_dir)], capture_output=True)
@@ -161,18 +229,17 @@ def extract_archive(archive_path, dest_dir):
         else:
             raise ValueError("Install 'p7zip' to extract 7Z files.")
     elif any(name.endswith(e) for e in (".tar.gz",".tgz",".tar.xz",".tar.bz2",".tar",".tar.zst")):
-        try:
-            with tarfile.open(archive_path, "r:*") as tf:
-                for m in tf.getmembers():
-                    if not str((dest_dir / m.name).resolve()).startswith(str(dest_dir.resolve())):
-                        raise ValueError(f"Path traversal: {m.name}")
-                tf.extractall(dest_dir)
-        except Exception:
-            if shutil.which("tar"):
-                r = subprocess.run(["tar", "-xf", str(archive_path), "-C", str(dest_dir)], capture_output=True)
-                if r.returncode != 0: raise ValueError("The file is corrupt, or the download failed (possibly requires login on pling).")
-            else:
-                raise ValueError("Could not extract the archive.")
+        with tarfile.open(archive_path, "r:*") as tf:
+            members = tf.getmembers()
+            _check_archive_limits(members)
+            for member in members:
+                _safe_archive_target(dest_dir, member.name)
+                if member.issym():
+                    _safe_archive_link(dest_dir, member.name, member.linkname)
+                elif member.islnk() or member.isdev():
+                    raise ValueError(f"Archive contains an unsafe hard link or device: {member.name}")
+            for member in members:
+                tf.extract(member, dest_dir)
     else:
         if shutil.which("7z"):
             r = subprocess.run(["7z", "x", "-y", f"-o{dest_dir}", str(archive_path)], capture_output=True)
@@ -327,7 +394,7 @@ def _robust_copytree(src, dest):
         except Exception:
             shutil.copytree(src, dest, symlinks=False)
 
-def install_theme(archive_path, theme_type, scope="local", custom_path=None):
+def install_theme(archive_path, theme_type, scope="local", custom_path=None, repository_name=None):
     """
     Install a theme. For system scope, uses pkexec automatically.
     Auto-detects actual theme type from content if possible.
@@ -370,6 +437,8 @@ def install_theme(archive_path, theme_type, scope="local", custom_path=None):
                     
                     target_dir = Path(custom_path) if custom_path else paths[det_type][actual_scope]
                     name = det_dir.name
+                    if repository_name and actual_scope == "local" and len(detected) == 1:
+                        name = repository_name
                     if name == ".git":
                         continue
                     dest = target_dir / name
@@ -395,6 +464,8 @@ def install_theme(archive_path, theme_type, scope="local", custom_path=None):
                 
                 for td in theme_dirs:
                     name = td.name
+                    if repository_name and scope == "local" and len(theme_dirs) == 1:
+                        name = repository_name
                     if name == ".git": continue
                     dest = target_dir / name
                     
@@ -524,8 +595,9 @@ def _save_installer_config(cfg):
 
 def is_theme_installed(theme_id, theme_name, category, installed_names):
     """
-    Check if a theme is installed, prioritizing the local installed database (ID matching).
-    Falls back to fuzzy matching on theme_name against installed_names.
+    Check whether a web theme is explicitly linked to an installed folder.
+    Folder-name matching is deliberately avoided: names such as "Adwaita" are
+    ambiguous and produced false positives for unrelated web themes.
     """
     # 1. Try ID-based matching from local database
     if theme_id:
@@ -562,8 +634,7 @@ def is_theme_installed(theme_id, theme_name, category, installed_names):
                     except Exception:
                         pass
 
-    # 2. Fallback to robust fuzzy name matching
-    return is_theme_installed_fuzzy(theme_name, installed_names)
+    return False
 
 def get_installed_themes_secure(theme_type):
     """Get system themes using pkexec to bypass permission errors."""
@@ -684,7 +755,8 @@ def get_plymouth_post_install_script(variant_path):
     p_file = Path(variant_path)
     # The theme name for plymouth-set-default-theme is usually 
     # the name of the .plymouth file without the extension.
-    theme_id = p_file.stem
+    theme_id = shlex.quote(p_file.stem)
+    safe_variant_path = shlex.quote(str(p_file))
     
     return f"""#!/bin/bash
 export PATH=$PATH:/usr/sbin:/usr/bin:/sbin:/bin
@@ -692,10 +764,10 @@ export PATH=$PATH:/usr/sbin:/usr/bin:/sbin:/bin
 # Ensure the theme is recognized by Plymouth
 if command -v plymouth-set-default-theme >/dev/null 2>&1; then
     # We use the filename (stem) as it's the standard identifier
-    plymouth-set-default-theme -R "{theme_id}"
+    plymouth-set-default-theme -R {theme_id}
 elif command -v update-alternatives >/dev/null 2>&1; then
-    update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth "{variant_path}" 200
-    update-alternatives --set default.plymouth "{variant_path}"
+    update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth {safe_variant_path} 200
+    update-alternatives --set default.plymouth {safe_variant_path}
     
     # Regenerate initramfs
     if command -v update-initramfs >/dev/null 2>&1; then

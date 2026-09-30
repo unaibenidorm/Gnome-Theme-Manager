@@ -231,7 +231,18 @@ class CommandDialog(Adw.Dialog):
         super().__init__(title=title, content_width=550, content_height=400)
         tb = Adw.ToolbarView()
         tb.add_top_bar(Adw.HeaderBar())
-        
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        content.set_margin_start(12); content.set_margin_end(12)
+        content.set_margin_top(12); content.set_margin_bottom(12)
+        auth_notice = Gtk.Label(
+            label=f"Administrator authentication is required for: {title}",
+            wrap=True,
+            xalign=0,
+        )
+        auth_notice.add_css_class("caption")
+        content.append(auth_notice)
+
         sw = Gtk.ScrolledWindow(vexpand=True)
         self.tv = Gtk.TextView(editable=False, monospace=True)
         self.tv.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
@@ -239,7 +250,8 @@ class CommandDialog(Adw.Dialog):
         self.tv.set_margin_top(10); self.tv.set_margin_bottom(10)
         
         sw.set_child(self.tv)
-        tb.set_content(sw)
+        content.append(sw)
+        tb.set_content(content)
         self.set_child(tb)
         
         self.script_content = script_content

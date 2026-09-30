@@ -1,9 +1,10 @@
 """Detail view for a selected theme."""
-import gi, threading, os, tempfile, webbrowser, json
+import gi, threading, os, tempfile, webbrowser, json, shutil
 gi.require_version('Gtk','4.0'); gi.require_version('Adw','1'); gi.require_version('GdkPixbuf','2.0')
 from gi.repository import Gtk, Adw, GLib, GdkPixbuf, Gdk
 from pathlib import Path
-from . import api, installer
+from urllib.parse import urlsplit
+from . import api, installer, library
 from .widgets import InAppImageViewer
 
 _CONFIG_DIR = Path.home() / ".config" / "gnome-theme-manager"
@@ -145,9 +146,9 @@ class ThemeDetailView(Gtk.Box):
             _save_detail_config(cfg)
         
         for lbl, val in [("Author", data.get("personid","")), ("Version", data.get("version","")),
-                         ("Downloads", data.get("downloads","0")), ("Rating", str(data.get("score","0"))),
-                         ("Updated", str(data.get("changed",""))[:10])]:
-            ig.add(Adw.ActionRow(title=lbl, subtitle=val))
+                          ("Downloads", data.get("downloads","0")), ("Rating", str(data.get("score","0"))),
+                          ("Updated", str(data.get("changed",""))[:10])]:
+            ig.add(Adw.ActionRow(title=lbl, subtitle=str(val)))
         self.box.append(ig)
 
         # Description (HTML stripped)
@@ -171,10 +172,40 @@ class ThemeDetailView(Gtk.Box):
         ag = Adw.PreferencesGroup(title="Install")
         cat_info = api.CATEGORIES.get(cat_key, {})
 
+        favorite_row = Adw.ActionRow(title="Favorite", subtitle="Save this theme in your personal library")
+        favorite_btn = Gtk.Button(
+            icon_name="starred-symbolic" if library.is_favorite(data.get("name", ""), cat_key) else "non-starred-symbolic",
+            valign=Gtk.Align.CENTER,
+        )
+        def _toggle_favorite(button):
+            saved = library.toggle_favorite(data, cat_key)
+            button.set_icon_name("starred-symbolic" if saved else "non-starred-symbolic")
+            self.window.show_toast("Added to favorites" if saved else "Removed from favorites")
+        favorite_btn.connect("clicked", lambda button: _toggle_favorite(button))
+        favorite_row.add_suffix(favorite_btn)
+        ag.add(favorite_row)
+
+        share_row = Adw.ActionRow(title="Share theme", subtitle="Create a code that opens this exact theme")
+        share_btn = Gtk.Button(icon_name="emblem-shared-symbolic", valign=Gtk.Align.CENTER)
+        share_btn.set_tooltip_text("Create sharing code")
+        share_btn.connect("clicked", lambda button: self.window._show_share_code(
+            library.export_share_code([{"content_id": data.get("id", ""), "category": cat_key}]), 1))
+        share_row.add_suffix(share_btn)
+        ag.add(share_row)
+
+        link_row = Adw.ActionRow(title="Link existing installation", subtitle="Associate an already installed folder with this web theme")
+        link_btn = Gtk.Button(label="Link", valign=Gtk.Align.CENTER)
+        link_btn.connect("clicked", lambda button: self._link_existing_installation())
+        link_row.add_suffix(link_btn)
+        ag.add(link_row)
+
         has_vars = self._has_variants()
 
         if cat_info.get("system_only"):
-            sr = Adw.ActionRow(title="Install system-wide (requires password)", subtitle="pkexec will be used automatically")
+            sr = Adw.ActionRow(
+                title="Install system-wide",
+                subtitle="Administrator authentication is required to install this theme for all users"
+            )
             
             label = "Install another variant" if (is_installed and has_vars) else ("Installed" if is_installed else "Install")
             self.install_btn_sys = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
@@ -274,6 +305,46 @@ class ThemeDetailView(Gtk.Box):
         if not self.theme_data: return
         self._check_variants(scope, False)
 
+    def _link_existing_installation(self):
+        """Associate a real local/system folder with this precise web theme ID."""
+        theme_id = self.theme_data.get("id")
+        if not theme_id:
+            self.window.show_toast("This web theme has no identifier to link")
+            return
+
+        dialog = Adw.Dialog(title="Link installed folder", content_width=460, content_height=420)
+        toolbar = Adw.ToolbarView(); toolbar.add_top_bar(Adw.HeaderBar())
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_start(12); box.set_margin_end(12); box.set_margin_top(12); box.set_margin_bottom(12)
+        box.append(Gtk.Label(label="Choose the folder that corresponds to this web theme.", wrap=True, xalign=0))
+        listbox = Gtk.ListBox(); listbox.add_css_class("boxed-list")
+
+        candidates = []
+        for scope in ("local", "system"):
+            found = installer.get_installed_themes(self.cat_key, scope)
+            if isinstance(found, list):
+                candidates.extend((name, scope) for name, _path in found)
+        if not candidates:
+            listbox.append(Adw.ActionRow(title="No compatible installed folders found"))
+        for folder, scope in candidates:
+            row = Adw.ActionRow(title=folder, subtitle=f"{scope.capitalize()} installation")
+            button = Gtk.Button(label="Link", valign=Gtk.Align.CENTER)
+            def _save_link(button, selected_folder=folder, selected_scope=scope):
+                cfg = _load_detail_config()
+                db = cfg.setdefault("installed_database", {})
+                db[str(theme_id)] = {
+                    "id": str(theme_id), "name": self.theme_data.get("name", ""),
+                    "category": self.cat_key, "scope": selected_scope, "folders": [selected_folder],
+                }
+                _save_detail_config(cfg)
+                dialog.close()
+                self.window.show_toast("Installed folder linked to this web theme")
+                self.show_theme(self.theme_data, self.cat_key)
+            button.connect("clicked", _save_link)
+            row.add_suffix(button); listbox.append(row)
+        scroll = Gtk.ScrolledWindow(vexpand=True); scroll.set_child(listbox); box.append(scroll)
+        toolbar.set_content(box); dialog.set_child(toolbar); dialog.present(self.window)
+
     def _install_and_apply(self):
         if not self.theme_data: return
         self._check_variants("local", True)
@@ -370,15 +441,12 @@ class ThemeDetailView(Gtk.Box):
 
     def _start_install(self, name, link, scope, apply_after):
         is_git = api._is_git_repo_url(link)
-        
         if is_git:
             md = Adw.MessageDialog(heading="Code Repository", body=f"The link for '{name}' points to a code repository (GitHub/GitLab). The program will try to download and find themes automatically, but this might be experimental. Do you want to continue?")
             md.add_response("cancel", "Cancel")
             md.add_response("ok", "Continue")
             md.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
-            def on_res(d, res):
-                if res == "ok": self._show_install_disclaimer(name, link, scope, apply_after, is_git)
-            md.connect("response", on_res)
+            md.connect("response", lambda dialog, response: self._show_install_disclaimer(name, link, scope, apply_after, is_git) if response == "ok" else None)
             md.set_transient_for(self.window)
             md.present()
         else:
@@ -415,13 +483,11 @@ class ThemeDetailView(Gtk.Box):
         md.present()
 
     def _ask_github_redirect(self, name, link, scope, apply_after):
-        md = Adw.MessageDialog(heading="Code Repository", body=f"The link for '{name}' redirects to a code repository (GitHub/GitLab). The program will try to clone it to find themes automatically, but it might be experimental. Do you want to continue?")
+        md = Adw.MessageDialog(heading="Code Repository", body=f"The link for '{name}' redirects to a GitHub/GitLab repository. Do you want to continue?")
         md.add_response("cancel", "Cancel")
         md.add_response("ok", "Continue")
         md.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
-        def on_res(d, res):
-            if res == "ok": self._actual_install(name, link, scope, apply_after, True)
-        md.connect("response", on_res)
+        md.connect("response", lambda dialog, response: self._actual_install(name, link, scope, apply_after, True) if response == "ok" else None)
         md.set_transient_for(self.window)
         md.present()
 
@@ -430,6 +496,7 @@ class ThemeDetailView(Gtk.Box):
         threading.Thread(target=self._do_install, args=(name, link, scope, apply_after, is_git), daemon=True).start()
 
     def _do_install(self, name, link, scope, apply_after, is_git):
+        persistent_download = False
         if is_git:
             # Strip /archive/ or /releases/ suffixes to get the actual repo URL
             clean_link = link.split("/archive/")[0] if "/archive/" in link else link
@@ -441,8 +508,12 @@ class ThemeDetailView(Gtk.Box):
             clone_url = clean_link if clean_link.endswith(".git") else clean_link + ".git"
             import subprocess
             try:
-                safe_name = name.replace(" ", "_").replace("/", "_")
-                clone_dir = Path(tempfile.mkdtemp()) / safe_name
+                repository_name = Path(urlsplit(clean_link).path.rstrip("/")).name or name
+                safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in repository_name)[:80]
+                clone_dir = Path.home() / ".local" / "share" / "gnome-theme-manager" / "themes" / safe_name
+                clone_dir.parent.mkdir(parents=True, exist_ok=True)
+                if clone_dir.exists():
+                    shutil.rmtree(clone_dir)
                 r = subprocess.run(["git", "clone", "--depth", "1", clone_url, str(clone_dir)], capture_output=True)
                 if r.returncode != 0:
                     # Retry without .git suffix
@@ -452,6 +523,7 @@ class ThemeDetailView(Gtk.Box):
                         return
                 ok = True
                 tmp = str(clone_dir)
+                persistent_download = True
             except FileNotFoundError:
                 GLib.idle_add(self.window.show_toast, "❌ Error: Install 'git' to clone themes.")
                 return
@@ -460,7 +532,8 @@ class ThemeDetailView(Gtk.Box):
             ext = "".join(Path(filename).suffixes)
             if not ext: ext = ".tar.gz"
 
-            tmp = tempfile.mktemp(suffix=ext)
+            tmp_fd, tmp = tempfile.mkstemp(suffix=ext)
+            os.close(tmp_fd)
             ok = api.download_theme_file(link, tmp)
             
             if isinstance(ok, str) and ("github.com" in ok or "gitlab.com" in ok):
@@ -477,17 +550,22 @@ class ThemeDetailView(Gtk.Box):
 
         cat_info = api.CATEGORIES.get(self.cat_key, {})
         actual_scope = "system" if cat_info.get("system_only") else scope
-        success, msg = installer.install_theme(tmp, self.cat_key, actual_scope)
+        success, msg = installer.install_theme(
+            tmp,
+            self.cat_key,
+            actual_scope,
+            repository_name=safe_name if is_git and actual_scope == "local" else None,
+        )
 
         try:
-            import shutil
-            if Path(tmp).is_dir(): shutil.rmtree(tmp)
+            if Path(tmp).is_dir() and not persistent_download: shutil.rmtree(tmp)
             else: os.unlink(tmp)
         except OSError: pass
 
         if success:
             names = msg.replace("Installed: ", "").split(", ")
             installed_name = names[0] if names else self.theme_data.get("name","")
+            library.record_install(installed_name, self.cat_key, link, actual_scope, tmp if persistent_download else "", self.theme_data.get("id", ""))
             
             # Record in our 100% reliable local database memory
             theme_id = self.theme_data.get("id")
@@ -680,9 +758,9 @@ class ThemeDetailView(Gtk.Box):
             self.prev_theme = ""
 
     def _test_plymouth_splash(self, theme_name):
-        import tempfile, os, subprocess
+        import tempfile, os, subprocess, shlex
         script = f"""#!/bin/bash
-plymouth-set-default-theme -R "{theme_name}"
+plymouth-set-default-theme -R {shlex.quote(theme_name)}
 plymouthd
 plymouth --show-splash
 sleep 6
@@ -803,4 +881,3 @@ plymouth quit
             script = installer.get_plymouth_post_install_script(str(variant_path))
         dlg = CommandDialog(title=f"Applying {cat_key.upper()} theme", script_content=script, parent_window=self.window)
         dlg.present(self.window)
-

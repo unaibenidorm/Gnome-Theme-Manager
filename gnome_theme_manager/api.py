@@ -4,7 +4,7 @@ OCS API Client for gnome-look.org (Pling/OpenDesktop)
 import json, os, hashlib, threading, re, html, collections, time
 from pathlib import Path
 from urllib.request import urlopen, Request
-from urllib.parse import urlencode, quote
+from urllib.parse import urlencode, quote, urlsplit
 from urllib.error import URLError, HTTPError
 
 API_BASE = "https://api.gnome-look.org/ocs/v1"
@@ -34,6 +34,7 @@ _MAX_CACHE_ENTRIES = 200
 IMAGE_CACHE = collections.OrderedDict()
 CACHE_LOCK = threading.Lock()
 API_SEMAPHORE = threading.Semaphore(3)  # Max 3 concurrent requests to avoid rate-limiting
+MAX_THEME_DOWNLOAD_SIZE = 1_024 * 1_024 * 1_024  # 1 GiB
 
 THEME_CACHE_FILE = Path.home() / ".config" / "gnome-theme-manager" / "themes_cache.json"
 
@@ -173,9 +174,11 @@ def _is_github_archive_url(url):
 
 def _is_git_repo_url(url):
     """Check if a URL points to a GitHub/GitLab repository page (not a download)."""
-    lower = url.lower()
-    if "github.com" not in lower and "gitlab.com" not in lower:
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in ("http", "https") or host not in {"github.com", "www.github.com", "gitlab.com", "www.gitlab.com"}:
         return False
+    lower = url.lower()
     # If it's an archive/release download, it's NOT a repo URL
     if _is_github_archive_url(lower):
         return False
@@ -183,10 +186,16 @@ def _is_git_repo_url(url):
 
 def download_theme_file(download_url, dest_path, progress_callback=None):
     try:
+        parsed = urlsplit(download_url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            return False
         req = Request(download_url)
         req.add_header("User-Agent", "GnomeThemeManager/2.0")
         with urlopen(req, timeout=120) as response:
             final_url = response.url
+            final_parsed = urlsplit(final_url)
+            if final_parsed.scheme not in ("http", "https") or not final_parsed.netloc:
+                return False
             
             # Check if we got redirected to a GitHub/GitLab repo page
             # (not an archive download)
@@ -194,6 +203,8 @@ def download_theme_file(download_url, dest_path, progress_callback=None):
                 return final_url
                 
             total = int(response.headers.get("Content-Length", 0))
+            if total > MAX_THEME_DOWNLOAD_SIZE:
+                return False
             Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
             downloaded = 0
             with open(dest_path, "wb") as f:
@@ -203,6 +214,8 @@ def download_theme_file(download_url, dest_path, progress_callback=None):
                         break
                     f.write(chunk)
                     downloaded += len(chunk)
+                    if downloaded > MAX_THEME_DOWNLOAD_SIZE:
+                        raise ValueError("Download exceeds the maximum allowed size")
                     if progress_callback:
                         progress_callback(downloaded, total)
         return True

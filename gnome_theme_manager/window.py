@@ -3,7 +3,7 @@ import gi, threading, webbrowser, json, os
 gi.require_version('Gtk','4.0'); gi.require_version('Adw','1')
 from gi.repository import Gtk, Adw, Gio, GLib, Gdk
 from pathlib import Path
-from . import api, installer, __version__, __app_name__, __github_url__, __website_url__, __authors__
+from . import api, installer, library, __version__, __app_name__, __github_url__, __website_url__, __authors__
 from .widgets import ThemeCard
 from .detail import ThemeDetailView
 
@@ -28,7 +28,7 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="Gnome Theme Manager", default_width=1100, default_height=750)
         self.cur_cat = "gtk"; self.cur_page = 0; self.cur_sort = "new"
-        self.cur_search = ""; self.total = 0; self.loading = False
+        self.cur_search = ""; self.total = 0; self.loading = False; self._load_generation = 0
         self.show_installed_only = False
         
         # Load theme preference
@@ -139,11 +139,12 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         
         plymouth_btn = Gtk.Button(label="🎨 Plymouth Creator"); plymouth_btn.connect("clicked", self._show_plymouth_creator)
         bb.append(plymouth_btn)
+
+        library_btn = Gtk.Button(label="★ My Library"); library_btn.connect("clicked", self._show_library)
+        bb.append(library_btn)
         
         pb = Gtk.Button(label="⚙ Preferences"); pb.connect("clicked", self._show_prefs)
         bb.append(pb)
-        ab = Gtk.Button(label="About"); ab.connect("clicked", self._show_about)
-        bb.append(ab)
         sb.append(bb)
 
         # Content
@@ -271,6 +272,10 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         filter_lb.append(sr)
         
         popbox.append(filter_lb)
+        about_btn = Gtk.Button(label="About")
+        about_btn.add_css_class("flat")
+        about_btn.connect("clicked", self._show_about)
+        popbox.append(about_btn)
         pop.set_child(popbox)
         filter_btn = Gtk.MenuButton(icon_name="view-more-symbolic", popover=pop)
         ch.pack_end(filter_btn)
@@ -336,7 +341,19 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
             self.show_browse_view(); self._load_themes()
 
     def _on_search(self, e):
-        self.cur_search = e.get_text().strip(); self.cur_page = 0; self._load_themes()
+        query = e.get_text().strip()
+        if query.startswith("GTM1-"):
+            try:
+                shared = library.import_share_code(query)
+            except ValueError:
+                self.show_toast("Invalid sharing code")
+                return
+            if len(shared) == 1:
+                self._open_library_theme(None, {"content_id": shared[0]["id"], "category": shared[0]["category"]})
+            else:
+                self.show_toast("Use Import in My Library for codes with multiple themes")
+            return
+        self.cur_search = query; self.cur_page = 0; self._load_themes()
         
     def _on_search_changed(self, e):
         self.cur_search = e.get_text().strip()
@@ -365,61 +382,39 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         if 0<=np<=mx: self.cur_page=np; self._load_themes()
 
     def _load_themes(self):
-        if self.loading: return
+        # A category/filter change supersedes any in-flight request.  We cannot
+        # cancel urllib calls, so a generation token makes their late results inert.
+        self._load_generation += 1
+        generation = self._load_generation
         self.loading = True; self.status.set_label("Loading themes...")
         cid = api.CATEGORIES[self.cur_cat]["id"]
-        threading.Thread(target=self._fetch, args=(cid,self.cur_page,self.cur_sort,self.cur_search,self.cur_cat), daemon=True).start()
+        threading.Thread(target=self._fetch, args=(cid, self.cur_page, self.cur_sort, self.cur_search, self.cur_cat, self.show_installed_only, generation), daemon=True).start()
 
-    def _fetch(self, cid, pg, so, se, ck):
-        if self.show_installed_only:
+    def _fetch(self, cid, pg, so, se, ck, installed_only, generation):
+        if installed_only:
+            # Installed-only is ID based.  Fetch only linked, still-present
+            # installations instead of downloading hundreds of catalogue pages.
             all_items = []
-            
-            # Fetch first 8 pages of 100 items each in parallel for a total of 800 items!
-            def fetch_page(p, results_list, idx):
-                try:
-                    items, tot = api.fetch_content_list(cid, p, 100, so, se)
-                    results_list[idx] = items
-                except Exception as ex:
-                    print(f"Error fetching page {p}: {ex}")
-                    results_list[idx] = []
-
-            threads = []
-            results = [None] * 8
-            for i in range(8):
-                t = threading.Thread(target=fetch_page, args=(i, results, i), daemon=True)
-                t.start()
-                threads.append(t)
-                
-            for t in threads:
-                t.join()
-                
-            for res in results:
-                if res:
-                    all_items.extend(res)
-            
-            # Add items from local installed_database config
             cfg = installer._load_installer_config()
             db = cfg.get("installed_database", {})
             for t_id, entry in db.items():
-                if entry.get("category") == ck:
-                    if "data" in entry:
-                        all_items.append(entry["data"])
-            
-            # Deduplicate items by ID
-            seen = set()
-            dedup_items = []
-            for it in all_items:
-                it_id = it.get("id")
-                if it_id not in seen:
-                    seen.add(it_id)
-                    dedup_items.append(it)
-                    
-            GLib.idle_add(self._update, dedup_items, len(dedup_items), ck)
+                if entry.get("category") != ck:
+                    continue
+                if se and se.lower() not in entry.get("name", "").lower():
+                    continue
+                if not installer.is_theme_installed(t_id, entry.get("name", ""), ck, []):
+                    continue
+                item = entry.get("data") or api.fetch_content_detail(t_id)
+                if item:
+                    all_items.append(item)
+            GLib.idle_add(self._update, all_items, len(all_items), ck, installed_only, generation)
         else:
             items, total = api.fetch_content_list(cid, pg, PAGESIZE, so, se)
-            GLib.idle_add(self._update, items, total, ck)
+            GLib.idle_add(self._update, items, total, ck, installed_only, generation)
 
-    def _update(self, items, total, ck):
+    def _update(self, items, total, ck, installed_only, generation):
+        if generation != self._load_generation:
+            return
         while c := self.flow.get_first_child(): self.flow.remove(c)
         self.total = total; mx = max(0,(total-1)//PAGESIZE) if total>0 else 0
         if not items:
@@ -440,11 +435,11 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
                 t_id = it.get("id")
                 is_inst = installer.is_theme_installed(t_id, t_name, ck, all_installed)
                 card = ThemeCard(it, ck, is_inst, low_perf=self.low_performance, list_view=self.list_view)
-                if self.show_installed_only and not is_inst:
+                if installed_only and not is_inst:
                     continue
                 self.flow.append(card)
         
-        if self.show_installed_only:
+        if installed_only:
             n_visible = 0
             c = self.flow.get_first_child()
             while c:
@@ -818,6 +813,196 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
         else:
             self.show_toast(f"❌ {msg}")
 
+    def _show_library(self, btn):
+        dialog = Adw.Dialog(title="My Library", content_width=520, content_height=500)
+        toolbar = Adw.ToolbarView(); toolbar.add_top_bar(Adw.HeaderBar())
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        content.set_margin_start(12); content.set_margin_end(12); content.set_margin_top(12); content.set_margin_bottom(12)
+
+        share_group = Adw.PreferencesGroup(title="Share installed themes", description="Export only themes installed by GTM or explicitly linked to a web theme")
+        share_row = Adw.ActionRow(title="Create sharing code", subtitle="Choose linked themes to send to another person")
+        share_btn = Gtk.Button(label="Export", valign=Gtk.Align.CENTER)
+        share_btn.connect("clicked", lambda button: self._show_share_export(dialog))
+        share_row.add_suffix(share_btn)
+        share_group.add(share_row)
+        import_row = Adw.ActionRow(title="Import sharing code", subtitle="Review and install themes shared by another person")
+        import_btn = Gtk.Button(label="Import", valign=Gtk.Align.CENTER)
+        import_btn.connect("clicked", lambda button: self._show_share_import(dialog))
+        import_row.add_suffix(import_btn)
+        share_group.add(import_row)
+        content.append(share_group)
+
+        favorites = Adw.PreferencesGroup(title="Favorites")
+        entries = library.favorites()
+        if entries:
+            for entry in entries:
+                row = Adw.ActionRow(title=entry.get("name", "Unnamed theme"), subtitle=api.CATEGORIES.get(entry.get("category"), {}).get("title", entry.get("category", "")))
+                open_btn = Gtk.Button(icon_name="go-next-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Open theme")
+                open_btn.connect("clicked", lambda button, item=entry: self._open_library_theme(dialog, item))
+                row.add_suffix(open_btn)
+                remove_btn = Gtk.Button(icon_name="starred-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Remove favorite")
+                def _remove_favorite(button, item=entry):
+                    library.remove_favorite(item.get("name", ""), item.get("category", ""))
+                    dialog.close()
+                    self._show_library(None)
+                remove_btn.connect("clicked", _remove_favorite)
+                row.add_suffix(remove_btn)
+                favorites.add(row)
+        else:
+            favorites.add(Adw.ActionRow(title="No favorites yet", subtitle="Open a theme and select Favorite."))
+        content.append(favorites)
+
+        history = Adw.PreferencesGroup(title="Installation history")
+        records = library.history()
+        clear_history_btn = Gtk.Button(label="Clear history", valign=Gtk.Align.CENTER)
+        clear_history_btn.add_css_class("destructive-action")
+        def _clear_history(button):
+            confirm = Adw.MessageDialog(heading="Clear installation history?", body="This only removes the history list. Installed themes and downloaded repositories will not be deleted.", transient_for=self)
+            confirm.add_response("cancel", "Cancel")
+            confirm.add_response("clear", "Clear history")
+            confirm.set_response_appearance("clear", Adw.ResponseAppearance.DESTRUCTIVE)
+            confirm.connect("response", lambda prompt, response: (library.clear_history(), dialog.close(), self._show_library(None)) if response == "clear" else None)
+            confirm.present()
+        clear_history_btn.connect("clicked", _clear_history)
+        history.set_header_suffix(clear_history_btn)
+        if records:
+            for record in records[:20]:
+                row = Adw.ActionRow(title=record.get("name", "Unnamed theme"), subtitle=f"{record.get('category', '')} · {record.get('scope', '')} · {record.get('installed_at', '')}")
+                open_btn = Gtk.Button(icon_name="go-next-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Open theme")
+                open_btn.connect("clicked", lambda button, item=record: self._open_library_theme(dialog, item))
+                row.add_suffix(open_btn)
+                download_path = record.get("download_path", "")
+                if download_path and Path(download_path).is_dir():
+                    folder_btn = Gtk.Button(icon_name="folder-open-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Open downloaded folder")
+                    folder_btn.connect("clicked", lambda button, path=download_path: Gio.AppInfo.launch_default_for_uri(Path(path).as_uri(), None))
+                    row.add_suffix(folder_btn)
+                history.add(row)
+        else:
+            history.add(Adw.ActionRow(title="No installations recorded", subtitle="New installations will appear here."))
+        content.append(history)
+        scroller = Gtk.ScrolledWindow(vexpand=True); scroller.set_child(content)
+        toolbar.set_content(scroller); dialog.set_child(toolbar); dialog.present(self)
+
+    def _show_share_export(self, library_dialog):
+        cfg = installer._load_installer_config()
+        database = cfg.get("installed_database", {})
+        entries = []
+        for content_id, entry in database.items():
+            category = entry.get("category")
+            if category in api.CATEGORIES and entry.get("folders") and installer.is_theme_installed(content_id, entry.get("name", ""), category, []):
+                entries.append({"content_id": str(content_id), "name": entry.get("name", "Unnamed theme"), "category": category})
+
+        dialog = Adw.Dialog(title="Export themes", content_width=500, content_height=480)
+        toolbar = Adw.ToolbarView(); toolbar.add_top_bar(Adw.HeaderBar())
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.set_margin_start(12); box.set_margin_end(12); box.set_margin_top(12); box.set_margin_bottom(12)
+        box.append(Gtk.Label(label="Select the web-linked installed themes to include in the sharing code.", wrap=True, xalign=0))
+        selected = []
+        listbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        for category in api.CATEGORIES:
+            category_entries = [item for item in entries if item["category"] == category]
+            if not category_entries:
+                continue
+            group = Adw.PreferencesGroup(title=api.CATEGORIES[category]["title"])
+            for entry in category_entries:
+                row = Adw.ActionRow(title=entry["name"])
+                check = Gtk.CheckButton(valign=Gtk.Align.CENTER)
+                def _toggle(button, item=entry):
+                    if button.get_active() and item not in selected:
+                        selected.append(item)
+                    elif not button.get_active() and item in selected:
+                        selected.remove(item)
+                check.connect("toggled", _toggle)
+                row.add_suffix(check); row.set_activatable_widget(check); group.add(row)
+            listbox.append(group)
+        if not entries:
+            listbox.append(Gtk.Label(label="No linked installed themes. Install a theme with GTM or link an existing folder first.", wrap=True))
+        scroll = Gtk.ScrolledWindow(vexpand=True); scroll.set_child(listbox); box.append(scroll)
+        export_btn = Gtk.Button(label="Copy sharing code")
+        export_btn.add_css_class("suggested-action")
+        def _export(button):
+            if not selected:
+                return
+            code = library.export_share_code(selected)
+            dialog.close()
+            self._show_share_code(code, len(selected))
+        export_btn.connect("clicked", _export); box.append(export_btn)
+        toolbar.set_content(box); dialog.set_child(toolbar); dialog.present(library_dialog)
+
+    def _show_share_code(self, code, count):
+        dialog = Adw.MessageDialog(heading="Sharing code", body=f"Code for {count} selected themes. Copy and send it to the other person.", transient_for=self)
+        dialog.add_response("close", "Close")
+        dialog.add_response("copy", "Copy code")
+        dialog.set_response_appearance("copy", Adw.ResponseAppearance.SUGGESTED)
+        code_label = Gtk.Label(label=code, selectable=True, wrap=True, xalign=0)
+        code_label.add_css_class("share-code")
+        code_frame = Gtk.Frame(); code_frame.add_css_class("share-code-frame")
+        code_frame.set_child(code_label)
+        dialog.set_extra_child(code_frame)
+        dialog.connect("response", lambda prompt, response: (self.get_clipboard().set(code), self.show_toast("Sharing code copied")) if response == "copy" else None)
+        dialog.present()
+
+    def _show_share_import(self, library_dialog):
+        dialog = Adw.Dialog(title="Import sharing code", content_width=500, content_height=240)
+        toolbar = Adw.ToolbarView(); toolbar.add_top_bar(Adw.HeaderBar())
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_margin_start(12); box.set_margin_end(12); box.set_margin_top(12); box.set_margin_bottom(12)
+        entry = Gtk.Entry(placeholder_text="Paste a GTM1 sharing code", hexpand=True)
+        box.append(entry)
+        import_btn = Gtk.Button(label="Review themes")
+        import_btn.add_css_class("suggested-action")
+        def _review(button):
+            try:
+                shared = library.import_share_code(entry.get_text())
+            except ValueError as error:
+                self.show_toast(str(error)); return
+            dialog.close()
+            self._review_shared_themes(shared)
+        import_btn.connect("clicked", _review); box.append(import_btn)
+        toolbar.set_content(box); dialog.set_child(toolbar); dialog.present(library_dialog)
+
+    def _review_shared_themes(self, shared):
+        def _fetch():
+            themes = [(api.fetch_content_detail(item["id"]), item["category"]) for item in shared]
+            themes = [(theme, category) for theme, category in themes if theme and category in api.CATEGORIES]
+            GLib.idle_add(self._confirm_shared_themes, themes)
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _confirm_shared_themes(self, themes):
+        names = "\n".join(f"• {theme.get('name', 'Unnamed theme')} ({api.CATEGORIES[category]['title']})" for theme, category in themes)
+        dialog = Adw.MessageDialog(heading="Install shared themes?", body=names or "No valid themes were found in this code.", transient_for=self)
+        dialog.add_response("cancel", "Cancel")
+        if themes:
+            dialog.add_response("install", "Install all")
+            dialog.set_response_appearance("install", Adw.ResponseAppearance.SUGGESTED)
+        def _install(prompt, response):
+            if response != "install": return
+            for theme, category in themes:
+                links = [(theme.get(f"downloadname{i}"), theme.get(f"downloadlink{i}")) for i in range(1, 20) if theme.get(f"downloadlink{i}") and theme.get(f"downloadname{i}")]
+                if not links: continue
+                view = ThemeDetailView(self); view.theme_data = theme; view.cat_key = category
+                name, link = links[0]
+                view._actual_install(name, link, "system" if api.CATEGORIES[category].get("system_only") else "local", False, api._is_git_repo_url(link))
+            self.show_toast(f"Started installing {len(themes)} shared themes")
+        dialog.connect("response", _install); dialog.present()
+
+    def _open_library_theme(self, dialog, entry):
+        if dialog:
+            dialog.close()
+        category = entry.get("category")
+        content_id = entry.get("content_id")
+        if category not in api.CATEGORIES or not content_id:
+            self.show_toast("This saved entry has no theme identifier. Add it again from the theme page.")
+            return
+        def _load_detail():
+            theme = api.fetch_content_detail(content_id)
+            if theme:
+                GLib.idle_add(self.detail.show_theme, theme, category)
+                GLib.idle_add(self.stack.set_visible_child_name, "detail")
+            else:
+                GLib.idle_add(self.show_toast, "Could not load this theme's details")
+        threading.Thread(target=_load_detail, daemon=True).start()
+
     def _show_prefs(self, btn):
         d = Adw.Dialog(); d.set_title("Preferences")
         d.set_content_width(450); d.set_content_height(550)
@@ -926,13 +1111,32 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
             dep_group.add(row)
             
         if not all_installed:
-            cmd_row = Adw.ActionRow(title="Install missing packages", subtitle=installer.get_install_command_for_distro())
+            cmd_row = Adw.ActionRow(
+                title="Install missing packages",
+                subtitle="Administrator authentication is required to install system dependencies"
+            )
             cmd_btn = Gtk.Button(icon_name="edit-copy-symbolic", valign=Gtk.Align.CENTER)
-            cmd_btn.connect("clicked", lambda b: (self.get_clipboard().set(installer.get_install_command_for_distro()), self.show_toast("Command copied to clipboard!")))
+            cmd_btn.set_tooltip_text("Copy the installation command")
+            cmd_btn.connect("clicked", lambda b: (self.get_clipboard().set(installer.get_install_command_for_distro()), self.show_toast("Installation command copied to clipboard")))
             cmd_row.add_suffix(cmd_btn)
             dep_group.add(cmd_row)
             
         vb.append(dep_group)
+
+        # Diagnostics
+        diag_group = Adw.PreferencesGroup(title="Diagnostics", description="Read-only checks for system integration and protected theme locations")
+        for check_name, detail, ok in installer.get_system_diagnostics():
+            row = Adw.ActionRow(title=check_name, subtitle=detail)
+            status = Gtk.Label(label="OK" if ok else "Needs attention", css_classes=["success" if ok else "error"])
+            row.add_suffix(status)
+            diag_group.add(row)
+        refresh_row = Adw.ActionRow(title="Refresh diagnostics", subtitle="Run the checks again")
+        refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic", valign=Gtk.Align.CENTER)
+        refresh_btn.set_tooltip_text("Refresh diagnostics")
+        refresh_btn.connect("clicked", lambda b: (d.close(), self._show_prefs(None)))
+        refresh_row.add_suffix(refresh_btn)
+        diag_group.add(refresh_row)
+        vb.append(diag_group)
 
         # Help and Support
         hg = Adw.PreferencesGroup(title="Help and Support")
@@ -955,7 +1159,7 @@ class GnomeThemeManagerWindow(Adw.ApplicationWindow):
             website=__website_url__,
             issue_url=__github_url__,
             license_type=Gtk.License.GPL_3_0,
-            developers=[f"{a} <https://github.com/unaibenidorm>" for a in __authors__],
+            developers=[f"{author} <https://github.com/{author}>" for author in __authors__],
             comments="Download and install GNOME themes from gnome-look.org.\n"
                      "Supports GTK, GNOME Shell, Icons, GDM, GRUB and Plymouth.",
         )

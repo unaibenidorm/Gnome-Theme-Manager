@@ -674,10 +674,14 @@ class ThemeTextEditDialog(Adw.Dialog):
         text = buf.get_text(start, end, True)
         temp_fd, temp_path = tempfile.mkstemp()
         try:
-            with open(temp_path, "w", encoding="utf-8") as f: f.write(text)
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+                f.write(text)
+            res = subprocess.run(["pkexec", "cp", "-f", temp_path, str(self.file_path)]).returncode
         finally:
-            os.close(temp_fd)
-        res = os.system(f"pkexec cp -f {temp_path} {self.file_path} && rm -f {temp_path}")
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
         if res == 0: self.parent_window.show_toast(f"Changes saved in {self.file_path.name}!"); self.close()
         else: self.parent_window.show_toast("Could not save (Permission required)")
 
@@ -1355,7 +1359,8 @@ class GrubCustomizerDialog(Adw.Dialog):
                 gfile = dialog.open_finish(result)
                 if gfile:
                     src = gfile.get_path()
-                    if os.system(f"pkexec cp {src} {self.theme_files_dir / Path(src).name}") == 0:
+                    dest = self.theme_files_dir / Path(src).name
+                    if subprocess.run(["pkexec", "cp", src, str(dest)]).returncode == 0:
                         self._on_theme_dropdown_changed(self.theme_dropdown, None)
             except Exception: pass
         dialog.open(self.get_root(), None, _on_selected)
@@ -1363,7 +1368,7 @@ class GrubCustomizerDialog(Adw.Dialog):
     def _on_del_theme_file(self, btn):
         row = self.files_listbox.get_selected_row()
         if not row or not hasattr(row, '_path') or not self.theme_files_dir: return
-        if os.system(f"pkexec rm -f {row._path}") == 0:
+        if subprocess.run(["pkexec", "rm", "-f", str(row._path)]).returncode == 0:
             self._on_theme_dropdown_changed(self.theme_dropdown, None)
 
     def _update_appearance_preview(self):
@@ -1568,7 +1573,7 @@ class GrubCustomizerDialog(Adw.Dialog):
                 return
             parent_dlg.close()
             script = (
-                f"cp -f '{backup_path}' /etc/default/grub\n"
+                f"cp -f {shlex.quote(str(backup_path))} /etc/default/grub\n"
                 f"if command -v update-grub >/dev/null 2>&1; then\n"
                 f"    update-grub\n"
                 f"elif command -v grub2-mkconfig >/dev/null 2>&1; then\n"
@@ -1631,9 +1636,8 @@ class GrubCustomizerDialog(Adw.Dialog):
             val = info["value"]; prefix = "" if info["active"] else "#"
             if val or not info["active"]: temp_lines.append(f'{prefix}{key}="{val}"\n')
         temp_fd, temp_path = tempfile.mkstemp()
-        try:
-            with open(temp_path, "w") as f: f.writelines(temp_lines)
-        finally: os.close(temp_fd)
+        with os.fdopen(temp_fd, "w") as f:
+            f.writelines(temp_lines)
         menu_text = "#!/bin/sh\nexec tail -n +3 $0\n# GTM Custom GRUB Menu Entries\n"
         open_depth = 0
         for entry in self.menu_entries:
@@ -1647,19 +1651,20 @@ class GrubCustomizerDialog(Adw.Dialog):
                 menu_text += "\n".join(ind + line for line in code_block.splitlines()) + "\n"
         while open_depth > 0: menu_text += "}\n"; open_depth -= 1
         temp_fd2, temp_menu_path = tempfile.mkstemp()
-        try:
-            with open(temp_menu_path, "w") as f: f.write(menu_text)
-        finally: os.close(temp_fd2)
+        with os.fdopen(temp_fd2, "w") as f:
+            f.write(menu_text)
         self._apply_grub_config(temp_path, temp_menu_path)
 
     def _apply_grub_config(self, temp_path, temp_menu_path):
         # Only disable grub.d generators on Debian/Ubuntu.
         # On Fedora/RHEL, 10_linux generates BLS entries and must stay enabled.
+        safe_temp_path = shlex.quote(temp_path)
+        safe_temp_menu_path = shlex.quote(temp_menu_path)
         script = (
-            f"cp -f {temp_path} /etc/default/grub\n"
-            f"rm -f {temp_path}\n"
+            f"cp -f {safe_temp_path} /etc/default/grub\n"
+            f"rm -f {safe_temp_path}\n"
             f"if [ -f /etc/debian_version ] || grep -q Ubuntu /etc/os-release 2>/dev/null; then\n"
-            f"    cp -f {temp_menu_path} /etc/grub.d/06_gtm_custom\n"
+            f"    cp -f {safe_temp_menu_path} /etc/grub.d/06_gtm_custom\n"
             f"    chmod +x /etc/grub.d/06_gtm_custom\n"
             f"    chmod -x /etc/grub.d/10_linux /etc/grub.d/20_memtest86+ "
             f"/etc/grub.d/30_os-prober /etc/grub.d/40_custom "
@@ -1669,7 +1674,7 @@ class GrubCustomizerDialog(Adw.Dialog):
             f"    # to prevent infinite duplication and breaking kernel updates.\n"
             f"    rm -f /etc/grub.d/06_gtm_custom\n"
             f"fi\n"
-            f"rm -f {temp_menu_path}\n"
+            f"rm -f {safe_temp_menu_path}\n"
             f"if command -v update-grub >/dev/null 2>&1; then\n"
             f"    update-grub\n"
             f"elif command -v grub2-mkconfig >/dev/null 2>&1; then\n"

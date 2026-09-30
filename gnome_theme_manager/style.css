@@ -162,3 +162,15 @@ headerbar {
 .bold {
     font-weight: 700;
 }
+
+.share-code-frame {
+    border-radius: 8px;
+    background: alpha(currentColor, 0.06);
+    border: 1px solid alpha(currentColor, 0.14);
+}
+
+.share-code {
+    font-family: monospace;
+    font-size: 12px;
+    padding: 10px;
+}
