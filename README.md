@@ -2,7 +2,9 @@
 
 ![Python](https://img.shields.io/badge/Python-3.x-blue?style=for-the-badge&logo=python) ![GTK4](https://img.shields.io/badge/GTK-4.0-green?style=for-the-badge&logo=gtk) ![Libadwaita](https://img.shields.io/badge/Libadwaita-1.x-purple?style=for-the-badge&logo=gnome) ![License](https://img.shields.io/badge/License-GPLv3-blue?style=for-the-badge)
 
-A modern, native GTK4/Libadwaita application designed to seamlessly browse, download, install, and apply GNOME themes and customizations directly from [gnome-look.org](https://www.gnome-look.org/).
+A modern, native GTK4/Libadwaita application for browsing, downloading, installing, applying, and sharing GNOME themes from [gnome-look.org](https://www.gnome-look.org/).
+
+> Current development release: **5.0 Beta**.
 
 > **⚠️ DISCLAIMER: BETA SOFTWARE**  
 > This software is currently in **Beta**. It is under active development and you may encounter unexpected bugs, crashes, or incomplete features. Use it at your own risk, especially when applying system-wide themes.
@@ -14,7 +16,7 @@ A modern, native GTK4/Libadwaita application designed to seamlessly browse, down
 
 ## ✨ Features
 
-- **Browse 6 theme categories**: GTK3/4, GNOME Shell, Icons, GDM, GRUB, and Plymouth.
+- **Browse 7 theme categories**: GTK3/4, GNOME Shell, Icons, Cursors, GDM, GRUB, and Plymouth.
 - **Preview & Explore**: View thumbnail previews loaded directly from gnome-look.org.
 - **Search & Filter**: Search across all themes, sort by newest, top-rated, most downloaded, or alphabetical order.
 - **Pagination**: Smoothly browse through massive theme catalogs.
@@ -24,6 +26,11 @@ A modern, native GTK4/Libadwaita application designed to seamlessly browse, down
   - Automatically configure GRUB and Plymouth configurations after installation.
 - **Extension Safety**: Automatically checks if the required "User Themes" extension is installed and active.
 - **Manage Installed Themes**: Easily review, apply, undo, or uninstall previously downloaded themes.
+- **My Library**: Save favorites, view installation history, and reopen the exact web page of a saved theme from inside the app.
+- **Reliable installed-theme matching**: Themes are identified by their linked gnome-look.org ID instead of ambiguous folder-name matching. Existing themes can be linked manually from their detail page.
+- **Theme sharing**: Export selected web-linked installed themes as a `GTM1-…` code. Import a code to review and install its theme list, or paste a single-theme code into search to open its detail page directly.
+- **Diagnostics**: Preferences includes read-only checks for PolicyKit, Plymouth, GRUB tools, protected directories, and system configuration.
+- **Safer archives**: ZIP and TAR downloads are checked for path traversal and unsafe external links; normal internal cursor-theme symlinks remain supported.
 
 ## 📦 Dependencies
 
@@ -49,6 +56,8 @@ chmod +x Gnome-Theme-Manager-*.AppImage
 ./Gnome-Theme-Manager-*.AppImage
 ```
 
+For the current beta release, the expected filename is `Gnome-Theme-Manager-5.0-beta-x86_64.AppImage`.
+
 ### Arch Linux — AUR
 
 Gnome Theme Manager is available on the [Arch User Repository (AUR)](https://aur.archlinux.org/packages/gnome-theme-manager). You can install it using your preferred AUR helper:
@@ -69,10 +78,8 @@ makepkg -si
 ### Running from source
 
 ```bash
-git clone https://github.com/yourusername/Gnome-Theme-Manager.git
+git clone https://github.com/unaibenidorm/Gnome-Theme-Manager.git
 cd Gnome-Theme-Manager
-./Gnome\ Theme\ Manager
-# OR
 python3 gnome-theme-manager.py
 ```
 
@@ -86,6 +93,7 @@ Gnome-Theme-Manager/
 │   ├── __init__.py
 │   ├── api.py                      # OCS API client (gnome-look.org)
 │   ├── installer.py                # Theme installation, pkexec, and apply logic
+│   ├── library.py                  # Favorites, installation history, and sharing codes
 │   ├── detail.py                   # Theme detail view & variants
 │   ├── widgets.py                  # Custom GTK templates and widgets
 │   ├── window.py                   # Main GTK4 application window
@@ -107,6 +115,9 @@ The application intelligently detects your system structure to place files where
 
 ## 💡 Important Notes
 
+- **Sharing themes**: Sharing codes only contain public gnome-look.org IDs and categories. They do not include local files, paths, passwords, or shell commands. Importing shows the theme list before installation begins.
+- **Git repositories**: GitHub/GitLab repository links show a confirmation before cloning. Locally installed repository themes use the repository name as their installed folder name.
+- **Installed-only filter**: This filter shows only themes installed through the app or explicitly linked to a web page. To add an existing external theme, open its web page in GTM and use **Link existing installation**.
 - **GNOME Shell Themes**: Applying custom shell themes requires the **User Themes** extension. The app checks for it automatically. If it says it's missing, install it manually:
   - **Ubuntu/Debian:** `sudo apt install gnome-shell-extension-user-theme`
   - **Fedora:** `sudo dnf install gnome-shell-extension-user-theme`
