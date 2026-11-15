@@ -10,16 +10,18 @@ env/
 
 # Archivos de empaquetado y binarios
 *.AppImage
+appimagetool
 AppDir/
 build/
 dist/
 *.egg-info/
 
 # Tu script local de construcción 
-build-appimage.sh
+build-appimage*
 release.md
 
 # Carpetas temporales o de tu editor
+.appimage-work/
 .vscode/
 .idea/
 *.swp
