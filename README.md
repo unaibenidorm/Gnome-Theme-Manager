@@ -4,7 +4,7 @@
 
 A modern, native GTK4/Libadwaita application for browsing, downloading, installing, applying, and sharing GNOME themes from [gnome-look.org](https://www.gnome-look.org/).
 
-> Current development release: **5.0 Beta**.
+> Current development release: **5.0.1 Beta**.
 
 > **⚠️ DISCLAIMER: BETA SOFTWARE**  
 > This software is currently in **Beta**. It is under active development and you may encounter unexpected bugs, crashes, or incomplete features. Use it at your own risk, especially when applying system-wide themes.
@@ -56,7 +56,7 @@ chmod +x Gnome-Theme-Manager-*.AppImage
 ./Gnome-Theme-Manager-*.AppImage
 ```
 
-For the current beta release, the expected filename is `Gnome-Theme-Manager-5.0-beta-x86_64.AppImage`.
+For the current beta release, the expected filename is `Gnome-Theme-Manager-5.0.1-beta-x86_64.AppImage`.
 
 ### Arch Linux — AUR
 
